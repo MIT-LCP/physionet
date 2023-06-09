@@ -1,13 +1,21 @@
 # PhysioNet
 
-Repository for [PhysioNet](http://physionet.org/), intended to be used initially for bug tracking.
+A collection of tools for working with the [PhysioNet](http://physionet.org/) repository.
 
-## Overview
+## Installation
 
-PhysioNet consists of four subprojects:
+```bash
+pip install physionet
+```
 
-- PhysioNet Library
-- PhysioBank
-- PhysioToolkit
-- PhysioNetWorks
+## Usage
 
+```python
+import physionet as pn
+
+# Download a dataset
+pn.download('ptbdb', 'data/ptbdb')
+
+# List all datasets
+pn.list_datasets()
+```

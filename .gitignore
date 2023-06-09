@@ -7,6 +7,7 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+.env
 .Python
 env/
 build/
@@ -58,5 +59,8 @@ docs/_build/
 # PyBuilder
 target/
 
-#Ipython Notebook
+# Ipython Notebook
 .ipynb_checkpoints
+
+# DS_Store files
+.DS_Store
