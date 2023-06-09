@@ -37,21 +37,6 @@ jobs:
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
         flake8 . --count --exit-zero --max-complexity=10 --statistics
-    # - name: Type check with pyright
-    #   run: |
-    #     pyright physionet
-    # - name: Test with pytest
-    #   run: |
-    #     pytest -vv --cov-report term-missing --cov physionet | tee coverage-report-${{ matrix.python-version }}.txt
-    # - name: Upload pytest test results
-    #   uses: actions/upload-artifact@v3
-    #   with:
-    #     name: coverage-report
-    #     path: coverage-report-${{ matrix.python-version }}.txt
-    #   # Use always() to always run this step to publish test results when there are test failures
-    #   if: ${{ always() }}
-    # - name: Generate coverage badge
-    #   if: ${{ matrix.coverage }}
-    #   run: |
-    #     value=$(awk '$1 == "TOTAL" {print $NF+0}' coverage-report-${{ matrix.python-version }}.txt)
-    #     anybadge --value=$value --file coverage.svg coverage
+    - name: Test with pytest
+      run: |
+        pytest .
