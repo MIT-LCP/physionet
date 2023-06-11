@@ -2,7 +2,9 @@
 Temporary module for the MLHC Professional Studies Class.
 """
 from collections import Counter
+
 from google.colab import widgets
+import numpy as np
 
 
 def visualize_notes(notes, hadm_id):
