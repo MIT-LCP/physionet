@@ -111,3 +111,11 @@ except RateLimitError:
 except ForbiddenError:
     print("Access denied - check credentials or project permissions")
 ```
+
+## Contributing
+
+Contributions are welcome!
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
