@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from enum import Enum
 from datetime import datetime
+import textwrap
 
 
 class Severity(Enum):
@@ -213,11 +214,9 @@ class ValidationResult:
             lines.extend(recommendations)
 
         # Add note about including validation report in submission
-        lines.extend([
-            "",
-            "Note: A validation report (PHYSIONET_REPORT.md) has been saved in your",
-            "      dataset folder. Please include this file in your final submission.",
-        ])
+        note_text = "Note: A validation report (PHYSIONET_REPORT.md) has been saved in your dataset folder. Please include this file in your final submission."
+        lines.append("")
+        lines.extend(self._wrap_text(note_text))
 
         return "\n".join(lines) + "\n"
 
@@ -254,10 +253,11 @@ class ValidationResult:
         size_gb = self.dataset_stats.total_size_bytes / (1024 ** 3)
         if size_gb > 200:
             recommendations.append("\nDataset Size:")
-            recommendations.append(
+            large_dataset_text = (
                 f"  ℹ  Your dataset is very large ({self._format_size(self.dataset_stats.total_size_bytes)}). "
                 "If you need assistance uploading large files, please contact the PhysioNet team at contact@physionet.org"
             )
+            recommendations.extend(self._wrap_text(large_dataset_text, indent="     "))
 
         # Collect unique suggestions from all issues
         suggestions_by_category = {}
@@ -295,7 +295,10 @@ class ValidationResult:
                 count = info['count']
                 icon = "✗" if info['severity'] == Severity.ERROR else "⚠"
                 count_str = f" ({count} file{'s' if count != 1 else ''})" if count > 1 else ""
-                recommendations.append(f"  {icon} {suggestion}{count_str}")
+                suggestion_text = f"  {icon} {suggestion}{count_str}"
+                # Wrap long suggestions
+                wrapped = self._wrap_text(suggestion_text, indent="     ")
+                recommendations.extend(wrapped)
 
         return recommendations
 
@@ -307,3 +310,10 @@ class ValidationResult:
                 return f"{size_bytes:.1f} {unit}"
             size_bytes /= 1024.0
         return f"{size_bytes:.1f} PB"
+
+    @staticmethod
+    def _wrap_text(text: str, width: int = 80, indent: str = "      ") -> List[str]:
+        """Wrap text to specified width with continuation indent."""
+        # Use textwrap to wrap the text
+        wrapped = textwrap.fill(text, width=width, subsequent_indent=indent)
+        return wrapped.split('\n')
