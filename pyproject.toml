@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "physionet"
-version = "0.1.4"
+version = "0.1.5"
 authors = [
   { name="Tom Pollard", email="tpollard@mit.edu" },
 ]
@@ -23,6 +23,7 @@ dependencies = [
     "pandas",
     "openpyxl",
     "requests",
+    "tqdm",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +41,9 @@ line-length = 119
 
 [tool.pyright]
 reportMissingImports = true
+
+[project.scripts]
+physionet = "physionet.cli:main"
 
 [project.urls]
 homepage = "https://github.com/MIT-LCP/physionet"
