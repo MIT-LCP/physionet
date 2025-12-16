@@ -10,6 +10,32 @@ pip install physionet
 
 ## Usage
 
+### PhysioNet "Preflight"
+
+Validate your dataset before submission to PhysioNet:
+
+```bash
+# Validate a dataset
+physionet validate /path/to/dataset
+
+# Run specific checks only
+physionet validate /path/to/dataset --checks filesystem,privacy
+
+# Disable sampling for complete validation (slower)
+physionet validate /path/to/dataset --no-sampling
+```
+
+The validator checks for:
+
+- File naming issues (spaces, special characters, long names)
+- Proprietary formats (suggests open alternatives)
+- Missing documentation (README.md)
+- CSV integrity (structure, encoding, duplicate columns)
+- Data quality (missing values, out-of-range data)
+- Privacy concerns (PHI patterns, sensitive files)
+
+A validation report (PHYSIONET_REPORT.md) is automatically saved in your dataset folder.
+
 ### API Client
 
 Interact with the PhysioNet API to explore and search published projects:
