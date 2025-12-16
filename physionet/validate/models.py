@@ -164,7 +164,13 @@ class ValidationResult:
             "=" * 50,
         ])
 
+        first_category = True
         for category, result in self.check_results.items():
+            # Add blank line before each category (except first)
+            if not first_category:
+                lines.append("")
+            first_category = False
+
             # Only show ✗ for errors, ✓ for pass or warnings-only
             status_icon = "✗" if result.error_count > 0 else "✓"
             issue_summary = ""
