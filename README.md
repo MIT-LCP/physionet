@@ -8,37 +8,102 @@ A collection of tools for working with the [PhysioNet](http://physionet.org/) re
 pip install physionet
 ```
 
-## Usage
+Requires Python 3.9 or later.
 
-### PhysioNet "Preflight"
+## Command-Line Interface
 
-Validate your dataset before submission to PhysioNet:
+The package provides a `physionet` command-line tool. You can also run it as a
+module with `python -m physionet`.
+
+### `physionet validate`
+
+Validate a dataset before submission to PhysioNet. The validator checks for
+common issues that can delay the review process.
 
 ```bash
-# Validate a dataset
 physionet validate /path/to/dataset
-
-# Run specific checks only
-physionet validate /path/to/dataset --checks filesystem,privacy
-
-# Disable sampling for complete validation (slower)
-physionet validate /path/to/dataset --no-sampling
 ```
 
-The validator checks for:
+A validation report is automatically saved as `PHYSIONET_REPORT.md` in the
+dataset directory.
 
-- File naming issues (spaces, special characters, long names)
-- Proprietary formats (suggests open alternatives)
-- Missing documentation (README.md)
-- CSV integrity (structure, encoding, duplicate columns)
-- Data quality (missing values, out-of-range data)
-- Privacy concerns (PHI patterns, sensitive files)
+**Options:**
 
-A validation report (PHYSIONET_REPORT.md) is automatically saved in your dataset folder.
+| Option | Description |
+|---|---|
+| `--checks CATEGORIES` | Comma-separated list of check categories to run. Categories: `filesystem`, `documentation`, `integrity`, `quality`, `privacy`. Default: all. |
+| `--report FILE` | Save the report to a specific path. Use a `.json` extension for JSON output, otherwise Markdown. |
+| `--level {error,warning,info}` | Minimum severity level to display. Default: `info`. |
+| `--no-sampling` | Disable row sampling for large CSV files. Scans all rows (slower but more thorough). |
+| `--max-rows N` | Maximum number of rows to scan per CSV file. Default: 10000. Only applies when sampling is enabled. |
 
-### API Client
+**Check categories:**
 
-Interact with the PhysioNet API to explore and search published projects:
+- **filesystem** - File naming issues (spaces, special characters, long names),
+  proprietary formats (suggests open alternatives), hidden files, version
+  control artifacts.
+- **documentation** - Missing or incomplete documentation (e.g. `README.md`).
+- **integrity** - CSV structure, encoding, and duplicate column detection.
+- **quality** - Missing values, outliers, and data type consistency.
+- **privacy** - PHI patterns (SSN, email, phone numbers), date patterns, and
+  sensitive file detection.
+
+**Examples:**
+
+```bash
+# Run only filesystem and privacy checks
+physionet validate /path/to/dataset --checks filesystem,privacy
+
+# Save report as JSON to a custom path
+physionet validate /path/to/dataset --report results.json
+
+# Show only errors and warnings (suppress info messages)
+physionet validate /path/to/dataset --level warning
+
+# Scan all rows in CSV files (no sampling)
+physionet validate /path/to/dataset --no-sampling
+
+# Limit scanning to 5000 rows per file
+physionet validate /path/to/dataset --max-rows 5000
+```
+
+**Exit codes:**
+
+- `0` - Validation passed (no errors).
+- `1` - Validation failed with errors.
+
+### Validation from Python
+
+The validator can also be used as a Python library:
+
+```python
+from physionet import validate_dataset, ValidationConfig
+
+# Run with default settings
+result = validate_dataset("/path/to/dataset")
+
+# Run specific checks with custom settings
+config = ValidationConfig(
+    check_filesystem=True,
+    check_documentation=True,
+    check_integrity=False,
+    check_quality=False,
+    check_phi=True,
+    max_rows_to_scan=5000,
+)
+
+result = validate_dataset("/path/to/dataset", config, show_progress=True)
+
+# Print the summary report
+print(result.summary())
+
+# Export as a dictionary (for JSON serialization)
+data = result.to_dict()
+```
+
+## API Client
+
+Interact with the PhysioNet REST API to explore and search published projects:
 
 ```python
 from physionet import PhysioNetClient
