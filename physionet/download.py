@@ -174,11 +174,15 @@ def _get_file_manifest(client: PhysioNetClient, slug: str, version: str) -> List
     """
     Get the file manifest from SHA256SUMS.txt.
 
+    Fetches the checksums file via the /files/ endpoint, which works
+    without authentication for open-access projects.
+
     Returns:
         List of (filepath, sha256_hash) tuples
     """
-    endpoint = f"projects/published/{slug}/{version}/sha256sums/"
-    response = client._make_request("GET", endpoint)
+    url = f"{client.base_url}/files/{slug}/{version}/SHA256SUMS.txt"
+    response = client.session.get(url, timeout=client.timeout)
+    response.raise_for_status()
     return _parse_manifest(response.text)
 
 
@@ -186,15 +190,16 @@ def _parse_manifest(text: str) -> List[Tuple[str, str]]:
     """
     Parse SHA256SUMS.txt content into (filepath, hash) tuples.
 
-    Each line has the format: <hash>  <filepath>
+    Handles both formats:
+    - <hash>  <filepath> (two spaces, standard sha256sum output)
+    - <hash> <filepath> (single space)
     """
     files = []
     for line in text.strip().splitlines():
         line = line.strip()
         if not line:
             continue
-        # Format: <hash>  <filepath> (two spaces between hash and path)
-        parts = line.split("  ", 1)
+        parts = line.split(None, 1)
         if len(parts) == 2:
             checksum, filepath = parts
             files.append((filepath, checksum))

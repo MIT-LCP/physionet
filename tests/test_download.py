@@ -374,7 +374,7 @@ class TestDownload:
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
             m.get(
-                "https://physionet.org/api/v1/projects/published/demo/1.0/sha256sums/",
+                "https://physionet.org/files/demo/1.0/SHA256SUMS.txt",
                 text=manifest,
             )
 
@@ -402,7 +402,7 @@ class TestDownload:
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
             m.get(
-                "https://physionet.org/api/v1/projects/published/demo/1.0/sha256sums/",
+                "https://physionet.org/files/demo/1.0/SHA256SUMS.txt",
                 text=manifest,
             )
 
@@ -430,7 +430,7 @@ class TestDownload:
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
             m.get(
-                "https://physionet.org/api/v1/projects/published/demo/1.0/sha256sums/",
+                "https://physionet.org/files/demo/1.0/SHA256SUMS.txt",
                 text=manifest,
             )
             m.get(f"{S3_BASE_URL}/demo/1.0/data.csv", content=file_content)
@@ -460,7 +460,7 @@ class TestDownload:
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/restricted/versions/", json=versions_response)
             m.get(
-                "https://physionet.org/api/v1/projects/published/restricted/1.0/sha256sums/",
+                "https://physionet.org/files/restricted/1.0/SHA256SUMS.txt",
                 text=manifest,
             )
             m.get(
@@ -535,7 +535,7 @@ class TestDownloadInterrupt:
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
             m.get(
-                "https://physionet.org/api/v1/projects/published/demo/1.0/sha256sums/",
+                "https://physionet.org/files/demo/1.0/SHA256SUMS.txt",
                 text=manifest,
             )
 
