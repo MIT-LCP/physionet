@@ -17,6 +17,54 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
+    # Download subcommand
+    download_parser = subparsers.add_parser(
+        "download",
+        help="Download a dataset from PhysioNet",
+    )
+    download_parser.add_argument(
+        "slug",
+        help="Project identifier (e.g., mimic-iv-demo)",
+    )
+    download_parser.add_argument(
+        "--version",
+        help="Project version to download (default: latest)",
+    )
+    download_parser.add_argument(
+        "--output",
+        default=".",
+        help="Output directory (default: current directory)",
+    )
+    download_parser.add_argument(
+        "--include",
+        action="append",
+        help="Glob pattern for files to include (can be repeated)",
+    )
+    download_parser.add_argument(
+        "--exclude",
+        action="append",
+        help="Glob pattern for files to exclude (can be repeated)",
+    )
+    download_parser.add_argument(
+        "--source",
+        choices=["auto", "physionet", "aws"],
+        default="auto",
+        help="Download source (default: auto)",
+    )
+    download_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be downloaded without downloading",
+    )
+    download_parser.add_argument(
+        "--username",
+        help="PhysioNet username (or set PHYSIONET_USERNAME env var)",
+    )
+    download_parser.add_argument(
+        "--password",
+        help="PhysioNet password (or set PHYSIONET_PASSWORD env var)",
+    )
+
     # Validate subcommand
     validate_parser = subparsers.add_parser(
         "validate",
@@ -56,13 +104,48 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "validate":
+    if args.command == "download":
+        return _handle_download(args)
+    elif args.command == "validate":
         return _handle_validate(args)
     elif args.command is None:
         parser.print_help()
         return 0
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
+        return 1
+
+
+def _handle_download(args):
+    """Handle the download subcommand."""
+    from physionet.download import download
+    from physionet.api.exceptions import ForbiddenError, NotFoundError
+
+    try:
+        download(
+            slug=args.slug,
+            version=args.version,
+            output_dir=args.output,
+            include=args.include,
+            exclude=args.exclude,
+            source=args.source,
+            dry_run=args.dry_run,
+            username=args.username,
+            password=args.password,
+        )
+        return 0
+    except NotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except ForbiddenError as e:
+        print(f"Access denied: {e}", file=sys.stderr)
+        print(
+            f"Visit https://physionet.org/content/{args.slug}/ to request access.",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
         return 1
 
 

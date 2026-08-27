@@ -15,6 +15,61 @@ Requires Python 3.9 or later.
 The package provides a `physionet` command-line tool. You can also run it as a
 module with `python -m physionet`.
 
+### `physionet download`
+
+Download datasets from PhysioNet:
+
+```bash
+# Download the latest version of a dataset
+physionet download mimic-iv-demo
+
+# Download a specific version
+physionet download mimic-iv-demo --version 2.2
+
+# Download to a specific directory
+physionet download mimic-iv-demo --output /data
+
+# Preview what would be downloaded
+physionet download mimic-iv-demo --dry-run
+
+# Download only specific files
+physionet download mimic-iv-demo --include "*.csv" --exclude "*/notes/*"
+```
+
+**Download sources:**
+
+The `--source` flag controls where files are downloaded from:
+
+- `auto` (default) — tries S3 first, falls back to PhysioNet direct if the dataset is not available on S3
+- `physionet` — always downloads from PhysioNet directly
+- `aws` — downloads from S3 using boto3 and the standard AWS credential chain
+
+```bash
+# Download from PhysioNet directly
+physionet download mimic-iv-demo --source physionet
+
+# Download from S3 using boto3
+physionet download mimic-iv-demo --source aws
+```
+
+When using `--source aws`, boto3 discovers credentials automatically via the [standard AWS credential chain](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html) (environment variables, `~/.aws/credentials`, IAM roles, etc.). This allows downloading credentialed datasets from S3 without passing PhysioNet credentials.
+
+**Authentication:**
+
+For credentialed datasets, provide PhysioNet credentials via flags or environment variables:
+
+```bash
+# Via flags
+physionet download mimic-iv --username user --password pass
+
+# Via environment variables
+export PHYSIONET_USERNAME=user
+export PHYSIONET_PASSWORD=pass
+physionet download mimic-iv
+```
+
+Downloads support automatic resume, SHA256 checksum verification, and retry on transient errors.
+
 ### `physionet validate`
 
 Validate a dataset before submission to PhysioNet. The validator checks for
@@ -72,9 +127,21 @@ physionet validate /path/to/dataset --max-rows 5000
 - `0` - Validation passed (no errors).
 - `1` - Validation failed with errors.
 
-### Validation from Python
+## Python API
 
-The validator can also be used as a Python library:
+### Download
+
+```python
+from physionet.download import download
+
+# Download a dataset
+download("mimic-iv-demo", version="2.2", output_dir="/data")
+
+# Download from S3 using boto3
+download("mimic-iv-demo", source="aws")
+```
+
+### Validation
 
 ```python
 from physionet import validate_dataset, ValidationConfig
@@ -101,7 +168,7 @@ print(result.summary())
 data = result.to_dict()
 ```
 
-## API Client
+### API Client
 
 Interact with the PhysioNet REST API to explore and search published projects:
 
