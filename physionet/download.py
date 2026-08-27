@@ -100,24 +100,32 @@ def download(
         failed = 0
 
         progress = tqdm(files, desc="Overall", unit="file")
-        for filepath, expected_hash in progress:
-            progress.set_postfix_str(filepath, refresh=True)
-            file_dest = dest / filepath
-            file_dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            for filepath, expected_hash in progress:
+                progress.set_postfix_str(filepath, refresh=True)
+                file_dest = dest / filepath
+                file_dest.parent.mkdir(parents=True, exist_ok=True)
 
-            # Skip files that already exist and pass checksum
-            if file_dest.exists() and _verify_checksum(file_dest, expected_hash):
-                skipped += 1
-                continue
+                # Skip files that already exist and pass checksum
+                if file_dest.exists() and _verify_checksum(file_dest, expected_hash):
+                    skipped += 1
+                    continue
 
-            file_url = f"{source_base_url}/{filepath}"
-            try:
-                size = _download_file(file_url, file_dest, expected_hash, client.session)
-                total_size += size
-                downloaded += 1
-            except Exception as e:
-                print(f"\nError downloading {filepath}: {e}")
-                failed += 1
+                file_url = f"{source_base_url}/{filepath}"
+                try:
+                    size = _download_file(file_url, file_dest, expected_hash, client.session)
+                    total_size += size
+                    downloaded += 1
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    print(f"\nError downloading {filepath}: {e}")
+                    failed += 1
+        except KeyboardInterrupt:
+            progress.close()
+            print()
+            print(f"\nDownload interrupted. {downloaded} downloaded, {skipped} skipped before interruption.")
+            return dest
 
         print()
         print(f"Complete: {downloaded} downloaded, {skipped} skipped, {failed} failed")
@@ -267,19 +275,24 @@ def _download_file(
     total = int(content_length) if content_length else None
     downloaded = 0
 
-    with open(dest, mode) as f:
-        with tqdm(
-            total=total,
-            initial=0,
-            unit="B",
-            unit_scale=True,
-            desc=dest.name,
-            leave=False,
-        ) as pbar:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-                downloaded += len(chunk)
-                pbar.update(len(chunk))
+    try:
+        with open(dest, mode) as f:
+            with tqdm(
+                total=total,
+                initial=0,
+                unit="B",
+                unit_scale=True,
+                desc=dest.name,
+                leave=False,
+            ) as pbar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    pbar.update(len(chunk))
+    except KeyboardInterrupt:
+        if dest.exists():
+            dest.unlink()
+        raise
 
     # Verify checksum
     if not _verify_checksum(dest, expected_hash):

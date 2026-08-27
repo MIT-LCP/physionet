@@ -364,3 +364,80 @@ class TestDownload:
         captured = capsys.readouterr()
         assert "1 failed" in captured.out
         assert not (tmp_path / "restricted-1.0" / "data.csv").exists()
+
+
+# --- Keyboard interrupt handling ---
+
+
+class TestDownloadFileInterrupt:
+    def test_partial_file_deleted_on_interrupt(self, tmp_path):
+        """Partially downloaded file is deleted when KeyboardInterrupt occurs."""
+        dest = tmp_path / "output.txt"
+
+        def interrupted_iter(chunk_size=8192):
+            yield b"partial data"
+            raise KeyboardInterrupt()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"Content-Length": "1000"}
+        mock_response.iter_content = interrupted_iter
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+
+        with pytest.raises(KeyboardInterrupt):
+            _download_file("https://example.com/file.txt", dest, "fakehash", mock_session)
+
+        assert not dest.exists(), "Partial file should be deleted on KeyboardInterrupt"
+
+
+class TestDownloadInterrupt:
+    def _make_manifest(self, files):
+        """Create a SHA256SUMS.txt content from (path, content) pairs."""
+        lines = []
+        for path, content in files:
+            h = hashlib.sha256(content).hexdigest()
+            lines.append(f"{h}  {path}")
+        return "\n".join(lines)
+
+    def test_download_interrupted_returns_gracefully(self, tmp_path, capsys):
+        """download() catches KeyboardInterrupt and prints summary."""
+        file1_content = b"file one"
+        file2_content = b"file two"
+        file1_hash = hashlib.sha256(file1_content).hexdigest()
+        file2_hash = hashlib.sha256(file2_content).hexdigest()
+        manifest = f"{file1_hash}  file1.csv\n{file2_hash}  file2.csv\n"
+        versions_response = [
+            {"slug": "demo", "title": "Demo", "version": "1.0", "abstract": "", "citation": ""}
+        ]
+
+        call_count = 0
+
+        def mock_download_file(url, dest, expected_hash, session):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                dest.write_bytes(file1_content)
+                return len(file1_content)
+            raise KeyboardInterrupt()
+
+        with rm.Mocker() as m:
+            m.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
+            m.get(
+                "https://physionet.org/api/v1/projects/published/demo/1.0/sha256sums/",
+                text=manifest,
+            )
+
+            with patch("physionet.download._download_file", side_effect=mock_download_file):
+                result = download(
+                    "demo",
+                    version="1.0",
+                    output_dir=str(tmp_path),
+                    base_url="https://physionet.org",
+                )
+
+        captured = capsys.readouterr()
+        assert "interrupted" in captured.out.lower()
+        assert "1 downloaded" in captured.out
+        assert result == tmp_path / "demo-1.0"
