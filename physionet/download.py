@@ -245,9 +245,9 @@ def _select_source(
 
     # Auto-select: try S3 first, fall back to PhysioNet direct.
     # Not all projects are mirrored to S3, so we probe with a HEAD request.
-    print("Checking AWS S3 availability...")
     s3_check_url = f"{S3_BASE_URL}/{slug}/{version}/SHA256SUMS.txt"
     try:
+        print("Checking AWS S3 availability...")
         resp = requests.head(s3_check_url, timeout=5)
         if resp.status_code == 200:
             print("Found on S3. Using AWS S3.")

@@ -4,6 +4,10 @@ import hashlib
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import sys
+import physionet.download  # noqa: F811
+download_module = sys.modules["physionet.download"]
+
 import pytest
 import requests
 import requests_mock as rm
@@ -111,7 +115,7 @@ class TestSelectSource:
         client.base_url = "https://physionet.org"
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        with patch("physionet.download.requests.head", return_value=mock_resp) as mock_head:
+        with patch("requests.head", return_value=mock_resp) as mock_head:
             source_type, source_base = _select_source(client, "demo", "1.0", "auto", None)
         mock_head.assert_called_once_with(f"{S3_BASE_URL}/demo/1.0/SHA256SUMS.txt", timeout=5)
         assert source_type == "http"
@@ -122,7 +126,7 @@ class TestSelectSource:
         client.base_url = "https://physionet.org"
         mock_resp = MagicMock()
         mock_resp.status_code = 404
-        with patch("physionet.download.requests.head", return_value=mock_resp):
+        with patch("requests.head", return_value=mock_resp):
             source_type, source_base = _select_source(client, "demo", "1.0", "auto", None)
         assert source_type == "http"
         assert source_base == "https://physionet.org/files/demo/1.0"
@@ -130,7 +134,7 @@ class TestSelectSource:
     def test_auto_s3_check_error_falls_back(self):
         client = MagicMock()
         client.base_url = "https://physionet.org"
-        with patch("physionet.download.requests.head", side_effect=requests.RequestException):
+        with patch("requests.head", side_effect=requests.RequestException):
             source_type, source_base = _select_source(client, "demo", "1.0", "auto", "user")
         assert source_type == "http"
         assert source_base == "https://physionet.org/files/demo/1.0"
@@ -545,7 +549,7 @@ class TestDownloadInterrupt:
             m.get("https://physionet.org/files/demo/1.0/SHA256SUMS.txt", text=manifest)
             m.head(f"{S3_BASE_URL}/demo/1.0/SHA256SUMS.txt", status_code=404)
 
-            with patch("physionet.download._download_file", side_effect=mock_download_file):
+            with patch.object(download_module, "_download_file", side_effect=mock_download_file):
                 result = download(
                     "demo",
                     version="1.0",
