@@ -227,6 +227,38 @@ class TestDownloadFile:
             with pytest.raises(ForbiddenError, match="Access denied"):
                 _download_file("https://example.com/file.txt", dest, "hash", session)
 
+    def test_retry_adapter_mounted(self, tmp_path):
+        """Retry adapter is mounted on the session when retries > 0."""
+        content = b"file content here"
+        expected_hash = hashlib.sha256(content).hexdigest()
+        dest = tmp_path / "output.txt"
+
+        with rm.Mocker() as m:
+            m.get("https://example.com/file.txt", content=content)
+            session = requests.Session()
+            _download_file("https://example.com/file.txt", dest, expected_hash, session, retries=3)
+
+        # Verify that retry adapter was mounted (requests_mock overrides it for
+        # the actual request, but we can check it was configured)
+        from requests.adapters import HTTPAdapter
+        adapter = session.get_adapter("https://example.com")
+        assert adapter.max_retries.total == 3
+        assert 503 in adapter.max_retries.status_forcelist
+
+    def test_retry_adapter_not_mounted_when_disabled(self, tmp_path):
+        """No retry adapter is mounted when retries=0."""
+        dest = tmp_path / "output.txt"
+
+        with rm.Mocker() as m:
+            m.get("https://example.com/file.txt", status_code=503)
+            session = requests.Session()
+            with pytest.raises(Exception):
+                _download_file("https://example.com/file.txt", dest, "fakehash", session, retries=0)
+
+        # Default adapter should have no retries configured
+        adapter = session.get_adapter("https://example.com")
+        assert adapter.max_retries.total == 0
+
     def test_resume_416_valid_checksum(self, tmp_path):
         """File already complete (416 Range Not Satisfiable) with valid checksum."""
         content = b"complete file"
@@ -414,7 +446,7 @@ class TestDownloadInterrupt:
 
         call_count = 0
 
-        def mock_download_file(url, dest, expected_hash, session):
+        def mock_download_file(url, dest, expected_hash, session, retries=3):
             nonlocal call_count
             call_count += 1
             if call_count == 1:

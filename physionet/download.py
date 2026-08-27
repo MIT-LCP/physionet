@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
 from tqdm import tqdm
+from urllib3.util.retry import Retry
 
 from physionet.api.client import PhysioNetClient
 from physionet.api.exceptions import ForbiddenError, NotFoundError
@@ -27,6 +29,7 @@ def download(
     username: Optional[str] = None,
     password: Optional[str] = None,
     base_url: str = "https://physionet.org",
+    retries: int = 3,
 ) -> Path:
     """
     Download a PhysioNet project.
@@ -42,6 +45,7 @@ def download(
         username: PhysioNet username (or use PHYSIONET_USERNAME env var)
         password: PhysioNet password (or use PHYSIONET_PASSWORD env var)
         base_url: PhysioNet base URL
+        retries: Number of retries for transient download errors (0 to disable)
 
     Returns:
         Path to the output directory
@@ -113,7 +117,7 @@ def download(
 
                 file_url = f"{source_base_url}/{filepath}"
                 try:
-                    size = _download_file(file_url, file_dest, expected_hash, client.session)
+                    size = _download_file(file_url, file_dest, expected_hash, client.session, retries=retries)
                     total_size += size
                     downloaded += 1
                 except KeyboardInterrupt:
@@ -236,13 +240,28 @@ def _download_file(
     dest: Path,
     expected_hash: str,
     session: requests.Session,
+    retries: int = 3,
 ) -> int:
     """
     Download a single file with resume support and checksum verification.
 
+    Args:
+        retries: Number of retries for transient errors (0 to disable)
+
     Returns:
         Number of bytes downloaded
     """
+    # Mount a retry adapter scoped to this download
+    if retries > 0:
+        retry_strategy = Retry(
+            total=retries,
+            backoff_factor=1,
+            status_forcelist=[502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+
     headers = {}
     mode = "wb"
     existing_size = 0
