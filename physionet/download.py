@@ -16,6 +16,7 @@ from physionet.api.exceptions import ForbiddenError, NotFoundError
 from physionet.api.utils import format_size, get_credentials_from_env
 
 S3_BASE_URL = "https://physionet-open.s3.amazonaws.com"
+S3_BUCKET = "physionet-open"
 
 
 def download(
@@ -76,7 +77,12 @@ def download(
             return Path(output_dir)
 
         # Select source
-        source_base_url = _select_source(client, slug, version, source, username)
+        source_type, source_base = _select_source(client, slug, version, source, username)
+
+        if source_type == "s3":
+            source_label = f"s3://{source_base}/{slug}/{version}"
+        else:
+            source_label = source_base
 
         # Prepare output directory
         dest = Path(output_dir) / f"{slug}-{version}"
@@ -84,7 +90,7 @@ def download(
 
         if dry_run:
             print(f"Project: {slug} v{version}")
-            print(f"Source: {source_base_url}")
+            print(f"Source: {source_label}")
             print(f"Destination: {dest}")
             print(f"Files ({len(files)}):")
             for filepath, checksum in files:
@@ -95,7 +101,7 @@ def download(
 
         # Download files
         print(f"Downloading {slug} v{version} ({len(files)} files)")
-        print(f"Source: {source_base_url}")
+        print(f"Source: {source_label}")
         print(f"Destination: {dest}")
         print()
 
@@ -115,9 +121,13 @@ def download(
                     skipped += 1
                     continue
 
-                file_url = f"{source_base_url}/{filepath}"
                 try:
-                    size = _download_file(file_url, file_dest, expected_hash, client.session, retries=retries)
+                    if source_type == "s3":
+                        s3_key = f"{slug}/{version}/{filepath}"
+                        size = _download_file_s3(source_base, s3_key, file_dest, expected_hash)
+                    else:
+                        file_url = f"{source_base}/{filepath}"
+                        size = _download_file(file_url, file_dest, expected_hash, client.session, retries=retries)
                     total_size += size
                     downloaded += 1
                 except KeyboardInterrupt:
@@ -214,25 +224,79 @@ def _select_source(
     version: str,
     source: str,
     username: Optional[str],
-) -> str:
+) -> Tuple[str, str]:
     """
-    Select the download source URL base.
+    Select the download source and return (source_type, source_base).
 
-    Open-access projects default to AWS S3. Credentialed projects use PhysioNet direct.
+    Returns:
+        A tuple of (source_type, source_base) where source_type is "http" or "s3",
+        and source_base is the URL prefix (for HTTP) or bucket name (for S3).
     """
     if source == "physionet":
-        return f"{client.base_url}/files/{slug}/{version}"
+        return ("http", f"{client.base_url}/files/{slug}/{version}")
 
     if source == "aws":
-        return f"{S3_BASE_URL}/{slug}/{version}"
+        return ("s3", S3_BUCKET)
 
     # Auto-select: use AWS for open projects, PhysioNet for credentialed
     if username:
         # User provided credentials, likely a credentialed project
-        return f"{client.base_url}/files/{slug}/{version}"
+        return ("http", f"{client.base_url}/files/{slug}/{version}")
 
     # Try AWS S3 for open-access projects
-    return f"{S3_BASE_URL}/{slug}/{version}"
+    return ("http", f"{S3_BASE_URL}/{slug}/{version}")
+
+
+def _download_file_s3(
+    bucket: str,
+    key: str,
+    dest: Path,
+    expected_hash: str,
+) -> int:
+    """
+    Download a single file from S3 using boto3 with checksum verification.
+
+    Uses the standard AWS credential chain (env vars, ~/.aws/credentials, IAM roles, etc.).
+
+    Returns:
+        Number of bytes downloaded
+    """
+    import boto3
+
+    s3 = boto3.client("s3")
+
+    # Get object metadata for progress bar
+    head = s3.head_object(Bucket=bucket, Key=key)
+    total_size = head["ContentLength"]
+
+    downloaded = 0
+    try:
+        with open(dest, "wb") as f:
+            with tqdm(
+                total=total_size,
+                unit="B",
+                unit_scale=True,
+                desc=dest.name,
+                leave=False,
+            ) as pbar:
+
+                def progress_callback(bytes_amount):
+                    nonlocal downloaded
+                    downloaded += bytes_amount
+                    pbar.update(bytes_amount)
+
+                s3.download_fileobj(bucket, key, f, Callback=progress_callback)
+    except KeyboardInterrupt:
+        if dest.exists():
+            dest.unlink()
+        raise
+
+    # Verify checksum
+    if not _verify_checksum(dest, expected_hash):
+        dest.unlink()
+        raise ValueError(f"Checksum verification failed for {dest.name}")
+
+    return downloaded
 
 
 def _download_file(

@@ -24,6 +24,7 @@ dependencies = [
     "openpyxl",
     "requests",
     "tqdm",
+    "boto3>=1.26.0",
 ]
 
 [project.optional-dependencies]

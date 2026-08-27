@@ -14,9 +14,11 @@ from physionet.download import (
     _filter_files,
     _select_source,
     _download_file,
+    _download_file_s3,
     _verify_checksum,
     _resolve_version,
     S3_BASE_URL,
+    S3_BUCKET,
 )
 from physionet.api.client import PhysioNetClient
 from physionet.api.exceptions import ForbiddenError, NotFoundError
@@ -94,24 +96,28 @@ class TestSelectSource:
     def test_physionet_source(self):
         client = MagicMock()
         client.base_url = "https://physionet.org"
-        result = _select_source(client, "demo", "1.0", "physionet", None)
-        assert result == "https://physionet.org/files/demo/1.0"
+        source_type, source_base = _select_source(client, "demo", "1.0", "physionet", None)
+        assert source_type == "http"
+        assert source_base == "https://physionet.org/files/demo/1.0"
 
     def test_aws_source(self):
         client = MagicMock()
-        result = _select_source(client, "demo", "1.0", "aws", None)
-        assert result == f"{S3_BASE_URL}/demo/1.0"
+        source_type, source_base = _select_source(client, "demo", "1.0", "aws", None)
+        assert source_type == "s3"
+        assert source_base == S3_BUCKET
 
     def test_auto_no_credentials(self):
         client = MagicMock()
-        result = _select_source(client, "demo", "1.0", "auto", None)
-        assert result == f"{S3_BASE_URL}/demo/1.0"
+        source_type, source_base = _select_source(client, "demo", "1.0", "auto", None)
+        assert source_type == "http"
+        assert source_base == f"{S3_BASE_URL}/demo/1.0"
 
     def test_auto_with_credentials(self):
         client = MagicMock()
         client.base_url = "https://physionet.org"
-        result = _select_source(client, "demo", "1.0", "auto", "user")
-        assert result == "https://physionet.org/files/demo/1.0"
+        source_type, source_base = _select_source(client, "demo", "1.0", "auto", "user")
+        assert source_type == "http"
+        assert source_base == "https://physionet.org/files/demo/1.0"
 
 
 # --- Checksum verification ---
@@ -273,6 +279,78 @@ class TestDownloadFile:
 
         assert size == 0
         assert dest.read_bytes() == content
+
+
+# --- S3 file download ---
+
+
+class TestDownloadFileS3:
+    def _make_mock_boto3(self, mock_s3):
+        """Create a mock boto3 module that returns the given S3 client."""
+        mock_boto3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+        return mock_boto3
+
+    def test_download_new_file(self, tmp_path):
+        content = b"s3 file content"
+        expected_hash = hashlib.sha256(content).hexdigest()
+        dest = tmp_path / "output.txt"
+
+        mock_s3 = MagicMock()
+        mock_s3.head_object.return_value = {"ContentLength": len(content)}
+
+        def fake_download_fileobj(bucket, key, fileobj, Callback=None):
+            fileobj.write(content)
+            if Callback:
+                Callback(len(content))
+
+        mock_s3.download_fileobj.side_effect = fake_download_fileobj
+        mock_boto3 = self._make_mock_boto3(mock_s3)
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            size = _download_file_s3("physionet-open", "demo/1.0/file.txt", dest, expected_hash)
+
+        assert dest.read_bytes() == content
+        assert size == len(content)
+        mock_s3.head_object.assert_called_once_with(Bucket="physionet-open", Key="demo/1.0/file.txt")
+
+    def test_download_checksum_mismatch(self, tmp_path):
+        content = b"s3 file content"
+        dest = tmp_path / "output.txt"
+
+        mock_s3 = MagicMock()
+        mock_s3.head_object.return_value = {"ContentLength": len(content)}
+
+        def fake_download_fileobj(bucket, key, fileobj, Callback=None):
+            fileobj.write(content)
+
+        mock_s3.download_fileobj.side_effect = fake_download_fileobj
+        mock_boto3 = self._make_mock_boto3(mock_s3)
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            with pytest.raises(ValueError, match="Checksum verification failed"):
+                _download_file_s3("physionet-open", "demo/1.0/file.txt", dest, "bad_hash")
+
+        assert not dest.exists()
+
+    def test_partial_file_deleted_on_interrupt(self, tmp_path):
+        dest = tmp_path / "output.txt"
+
+        mock_s3 = MagicMock()
+        mock_s3.head_object.return_value = {"ContentLength": 1000}
+
+        def fake_download_fileobj(bucket, key, fileobj, Callback=None):
+            fileobj.write(b"partial")
+            raise KeyboardInterrupt()
+
+        mock_s3.download_fileobj.side_effect = fake_download_fileobj
+        mock_boto3 = self._make_mock_boto3(mock_s3)
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
+            with pytest.raises(KeyboardInterrupt):
+                _download_file_s3("physionet-open", "demo/1.0/file.txt", dest, "fakehash")
+
+        assert not dest.exists()
 
 
 # --- Full download integration ---
