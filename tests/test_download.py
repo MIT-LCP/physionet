@@ -106,16 +106,32 @@ class TestSelectSource:
         assert source_type == "s3"
         assert source_base == S3_BUCKET
 
-    def test_auto_no_credentials(self):
+    def test_auto_s3_available(self):
         client = MagicMock()
-        source_type, source_base = _select_source(client, "demo", "1.0", "auto", None)
+        client.base_url = "https://physionet.org"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        with patch("physionet.download.requests.head", return_value=mock_resp) as mock_head:
+            source_type, source_base = _select_source(client, "demo", "1.0", "auto", None)
+        mock_head.assert_called_once_with(f"{S3_BASE_URL}/demo/1.0/SHA256SUMS.txt", timeout=5)
         assert source_type == "http"
         assert source_base == f"{S3_BASE_URL}/demo/1.0"
 
-    def test_auto_with_credentials(self):
+    def test_auto_s3_not_available(self):
         client = MagicMock()
         client.base_url = "https://physionet.org"
-        source_type, source_base = _select_source(client, "demo", "1.0", "auto", "user")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        with patch("physionet.download.requests.head", return_value=mock_resp):
+            source_type, source_base = _select_source(client, "demo", "1.0", "auto", None)
+        assert source_type == "http"
+        assert source_base == "https://physionet.org/files/demo/1.0"
+
+    def test_auto_s3_check_error_falls_back(self):
+        client = MagicMock()
+        client.base_url = "https://physionet.org"
+        with patch("physionet.download.requests.head", side_effect=requests.RequestException):
+            source_type, source_base = _select_source(client, "demo", "1.0", "auto", "user")
         assert source_type == "http"
         assert source_base == "https://physionet.org/files/demo/1.0"
 
@@ -373,10 +389,8 @@ class TestDownload:
 
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
-            m.get(
-                "https://physionet.org/files/demo/1.0/SHA256SUMS.txt",
-                text=manifest,
-            )
+            m.get("https://physionet.org/files/demo/1.0/SHA256SUMS.txt", text=manifest)
+            m.head(f"{S3_BASE_URL}/demo/1.0/SHA256SUMS.txt", status_code=404)
 
             result = download(
                 "demo",
@@ -401,10 +415,8 @@ class TestDownload:
 
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
-            m.get(
-                "https://physionet.org/files/demo/1.0/SHA256SUMS.txt",
-                text=manifest,
-            )
+            m.get("https://physionet.org/files/demo/1.0/SHA256SUMS.txt", text=manifest)
+            m.head(f"{S3_BASE_URL}/demo/1.0/SHA256SUMS.txt", status_code=404)
 
             result = download(
                 "demo",
@@ -429,11 +441,9 @@ class TestDownload:
 
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
-            m.get(
-                "https://physionet.org/files/demo/1.0/SHA256SUMS.txt",
-                text=manifest,
-            )
-            m.get(f"{S3_BASE_URL}/demo/1.0/data.csv", content=file_content)
+            m.get("https://physionet.org/files/demo/1.0/SHA256SUMS.txt", text=manifest)
+            m.head(f"{S3_BASE_URL}/demo/1.0/SHA256SUMS.txt", status_code=404)
+            m.get("https://physionet.org/files/demo/1.0/data.csv", content=file_content)
 
             result = download(
                 "demo",
@@ -459,12 +469,10 @@ class TestDownload:
 
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/restricted/versions/", json=versions_response)
+            m.get("https://physionet.org/files/restricted/1.0/SHA256SUMS.txt", text=manifest)
+            m.head(f"{S3_BASE_URL}/restricted/1.0/SHA256SUMS.txt", status_code=404)
             m.get(
-                "https://physionet.org/files/restricted/1.0/SHA256SUMS.txt",
-                text=manifest,
-            )
-            m.get(
-                f"{S3_BASE_URL}/restricted/1.0/data.csv",
+                "https://physionet.org/files/restricted/1.0/data.csv",
                 status_code=403,
                 text="You must sign the DUA",
             )
@@ -534,10 +542,8 @@ class TestDownloadInterrupt:
 
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
-            m.get(
-                "https://physionet.org/files/demo/1.0/SHA256SUMS.txt",
-                text=manifest,
-            )
+            m.get("https://physionet.org/files/demo/1.0/SHA256SUMS.txt", text=manifest)
+            m.head(f"{S3_BASE_URL}/demo/1.0/SHA256SUMS.txt", status_code=404)
 
             with patch("physionet.download._download_file", side_effect=mock_download_file):
                 result = download(

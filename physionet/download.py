@@ -243,13 +243,17 @@ def _select_source(
     if source == "aws":
         return ("s3", S3_BUCKET)
 
-    # Auto-select: use AWS for open projects, PhysioNet for credentialed
-    if username:
-        # User provided credentials, likely a credentialed project
-        return ("http", f"{client.base_url}/files/{slug}/{version}")
+    # Auto-select: try S3 first, fall back to PhysioNet direct.
+    # Not all projects are mirrored to S3, so we probe with a HEAD request.
+    s3_check_url = f"{S3_BASE_URL}/{slug}/{version}/SHA256SUMS.txt"
+    try:
+        resp = requests.head(s3_check_url, timeout=5)
+        if resp.status_code == 200:
+            return ("http", f"{S3_BASE_URL}/{slug}/{version}")
+    except requests.RequestException:
+        pass
 
-    # Try AWS S3 for open-access projects
-    return ("http", f"{S3_BASE_URL}/{slug}/{version}")
+    return ("http", f"{client.base_url}/files/{slug}/{version}")
 
 
 def _download_file_s3(

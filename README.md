@@ -40,7 +40,7 @@ physionet download mimic-iv-demo --include "*.csv" --exclude "*/notes/*"
 
 The `--source` flag controls where files are downloaded from:
 
-- `auto` (default) — uses S3 HTTP for open-access datasets, PhysioNet direct for credentialed datasets
+- `auto` (default) — tries S3 first, falls back to PhysioNet direct if the dataset is not available on S3
 - `physionet` — always downloads from PhysioNet directly
 - `aws` — downloads from S3 using boto3 and the standard AWS credential chain
 
