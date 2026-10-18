@@ -68,6 +68,10 @@ export PHYSIONET_PASSWORD=pass
 physionet download mimic-iv
 ```
 
+PhysioNet credentials are sent only to the configured PhysioNet origin. Requests
+to S3 mirrors or other hosts do not receive them; `--source aws` uses the AWS
+credential chain described above.
+
 Downloads support automatic resume, SHA256 checksum verification, and retry on transient errors.
 
 ### `physionet validate`

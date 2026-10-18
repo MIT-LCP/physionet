@@ -1,6 +1,8 @@
+from typing import Optional, Dict, Any, Tuple
+from urllib.parse import urljoin, urlsplit
+
 import requests
-from typing import Optional, Dict, Any
-from urllib.parse import urljoin
+from requests.auth import AuthBase, HTTPBasicAuth
 
 from .exceptions import (
     PhysioNetAPIError,
@@ -10,6 +12,26 @@ from .exceptions import (
     RateLimitError,
 )
 from .endpoints import ProjectsAPI
+
+
+def _origin(url: str) -> Tuple[str, Optional[str], Optional[int]]:
+    """Return the scheme, host, and effective port of a URL."""
+    parsed = urlsplit(url)
+    default_ports = {"http": 80, "https": 443}
+    return parsed.scheme.lower(), parsed.hostname, parsed.port or default_ports.get(parsed.scheme.lower())
+
+
+class _OriginScopedBasicAuth(AuthBase):
+    """Apply Basic authentication only to the configured PhysioNet origin."""
+
+    def __init__(self, base_url: str, username: str, password: str):
+        self.origin = _origin(base_url)
+        self.basic_auth = HTTPBasicAuth(username, password)
+
+    def __call__(self, request):
+        if _origin(request.url) == self.origin:
+            return self.basic_auth(request)
+        return request
 
 
 class PhysioNetClient:
@@ -37,7 +59,7 @@ class PhysioNetClient:
         self.session = requests.Session()
 
         if username and password:
-            self.session.auth = (username, password)
+            self.session.auth = _OriginScopedBasicAuth(self.base_url, username, password)
 
         self.session.headers.update({"User-Agent": "PhysioNet-Python-Client/1.0", "Accept": "application/json"})
 

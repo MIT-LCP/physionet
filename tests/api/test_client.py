@@ -1,5 +1,6 @@
 import pytest
 import requests_mock
+from requests.auth import AuthBase
 from physionet.api.client import PhysioNetClient
 from physionet.api.exceptions import (
     BadRequestError,
@@ -40,7 +41,7 @@ def test_client_initialization_with_auth():
     """Test client initializes with authentication."""
     client = PhysioNetClient(username="testuser", password="testpass")
 
-    assert client.session.auth == ("testuser", "testpass")
+    assert isinstance(client.session.auth, AuthBase)
 
 
 def test_client_initialization_without_auth():
@@ -48,6 +49,61 @@ def test_client_initialization_without_auth():
     client = PhysioNetClient()
 
     assert client.session.auth is None
+
+
+def test_auth_only_sent_to_configured_origin():
+    client = PhysioNetClient(
+        base_url="https://physionet.org", username="testuser", password="testpass"
+    )
+    urls = [
+        "https://physionet.org/api/v1/test/",
+        "https://physionet.org:443/files/test/1.0/data.csv",
+        "https://physionet-open.s3.amazonaws.com/test/1.0/data.csv",
+        "https://sub.physionet.org/files/test/1.0/data.csv",
+        "http://physionet.org/files/test/1.0/data.csv",
+        "https://physionet.org:8443/files/test/1.0/data.csv",
+    ]
+
+    with requests_mock.Mocker() as mock:
+        for url in urls:
+            mock.get(url, text="ok")
+        for url in urls:
+            client.session.get(url)
+
+    headers = [request.headers for request in mock.request_history]
+    assert headers[0]["Authorization"].startswith("Basic ")
+    assert headers[1]["Authorization"] == headers[0]["Authorization"]
+    assert all("Authorization" not in item for item in headers[2:])
+
+
+def test_auth_not_forwarded_on_cross_origin_redirect():
+    client = PhysioNetClient(username="testuser", password="testpass")
+    with requests_mock.Mocker() as mock:
+        mock.get(
+            "https://physionet.org/files/test/1.0/data.csv",
+            status_code=302,
+            headers={"Location": "https://storage.example/data.csv"},
+        )
+        mock.get("https://storage.example/data.csv", text="data")
+        response = client.session.get("https://physionet.org/files/test/1.0/data.csv")
+
+    assert response.text == "data"
+    assert "Authorization" in mock.request_history[0].headers
+    assert "Authorization" not in mock.request_history[1].headers
+
+
+def test_auth_uses_custom_base_url_origin():
+    client = PhysioNetClient(
+        base_url="https://test.example.com:8443", username="testuser", password="testpass"
+    )
+    with requests_mock.Mocker() as mock:
+        mock.get("https://test.example.com:8443/api/v1/test/", json={"ok": True})
+        mock.get("https://physionet.org/api/v1/test/", json={"ok": True})
+        client._make_request("GET", "test/")
+        client.session.get("https://physionet.org/api/v1/test/")
+
+    assert "Authorization" in mock.request_history[0].headers
+    assert "Authorization" not in mock.request_history[1].headers
 
 
 def test_client_has_projects_api():
