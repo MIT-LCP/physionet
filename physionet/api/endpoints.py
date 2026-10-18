@@ -1,6 +1,6 @@
 from html import unescape
 from typing import List, Optional, Iterator
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urljoin, urlsplit
 
 from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail
 from physionet.api.exceptions import NotFoundError, PhysioNetAPIError
@@ -109,18 +109,33 @@ class ProjectsAPI:
 
         The API supplies the project citation. BibTeX is read from the published
         project page because the API does not currently include that format.
-        When version is omitted, use the version marked latest by PhysioNet.
+        When version is omitted, follow PhysioNet's latest-project redirect.
         """
         if version is None:
-            latest = [
-                item for item in self.list_published()
-                if item.slug == project_slug and item.is_latest_version
-            ]
-            if not latest:
+            latest_url = f"{self.client.base_url}/content/{quote(project_slug, safe='')}/"
+            response = self.client.session.head(
+                latest_url, allow_redirects=False, timeout=self.client.timeout
+            )
+            if response.status_code == 404:
                 raise NotFoundError(f"No latest published version found for project '{project_slug}'")
-            if len(latest) > 1:
-                raise PhysioNetAPIError(f"Multiple latest versions found for project '{project_slug}'")
-            version = latest[0].version
+            response.raise_for_status()
+            target = urlsplit(urljoin(latest_url, response.headers.get("Location", "")))
+            base = urlsplit(self.client.base_url)
+            prefix = f"/content/{quote(project_slug, safe='')}/"
+            suffix = target.path[len(prefix):] if target.path.startswith(prefix) else ""
+            if (
+                response.status_code != 302
+                or (target.scheme, target.netloc) != (base.scheme, base.netloc)
+                or not suffix.endswith("/")
+                or "/" in suffix[:-1]
+                or not suffix[:-1]
+                or target.query
+                or target.fragment
+            ):
+                raise PhysioNetAPIError(f"Invalid latest-version redirect for project '{project_slug}'")
+            version = unquote(suffix[:-1])
+            if "/" in version or version in (".", ".."):
+                raise PhysioNetAPIError(f"Invalid latest-version redirect for project '{project_slug}'")
 
         project_version = next(
             (item for item in self.list_versions(project_slug) if item.version == version), None

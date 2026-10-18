@@ -54,7 +54,8 @@ physionet cite mimic-iv-demo --json > citations.json
 ```
 
 Use `--version 2.2` to cite a specific release. The text and JSON output include
-the resolved version so you can record it in your research. The project citation
+the resolved version so you can record it in your research. When omitted, the
+version comes from PhysioNet's latest-project redirect. The project citation
 text comes from PhysioNet's version API. For `--bibtex` and `--json`, the package
 reads the project's BibTeX from its published PhysioNet page. Some older
 projects do not provide BibTeX; `--bibtex` reports

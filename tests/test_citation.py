@@ -29,18 +29,12 @@ PROJECT_PAGE = (
     '@article{PhysioNet-demo-2.2,\n  title = {A &amp; B},\n  doi = {10.1234/demo}\n}'
     '</textarea><textarea id="bibtex-data-platform">@article{other}</textarea>'
 )
-PUBLISHED = [
-    {"slug": "demo", "version": "2.2", "is_latest_version": True, "title": "Demo"},
-    {"slug": "other", "version": "9.0", "is_latest_version": True, "title": "Other"},
-    {"slug": "demo", "version": "1.0", "is_latest_version": False, "title": "Demo"},
-]
-
-
-def register_project(mock, page=True, published=False):
+def register_project(mock, page=True, latest=False):
     mock.get("https://physionet.org/api/v1/projects/demo/versions/", json=VERSIONS)
     mock.get("https://physionet.org/api/v1/projects/demo/versions/2.2/", json=DETAIL)
-    if published:
-        mock.get("https://physionet.org/api/v1/projects/published/", json=PUBLISHED)
+    if latest:
+        mock.head("https://physionet.org/content/demo/", status_code=302,
+                  headers={"Location": "/content/demo/2.2/"})
     if page:
         mock.get("https://physionet.org/content/demo/2.2/", text=PROJECT_PAGE)
 
@@ -85,35 +79,41 @@ def test_get_citations_rejects_unknown_version():
     assert len(mock.request_history) == 1
 
 
-def test_get_citations_defaults_to_flagged_latest_even_when_not_last():
+def test_get_citations_uses_exact_project_latest_redirect_without_catalog():
     with requests_mock.Mocker() as mock:
-        register_project(mock, page=False, published=True)
+        register_project(mock, page=False, latest=True)
         with PhysioNetClient() as client:
             citations = client.projects.get_citations("demo")
 
     assert citations.version == "2.2"
     assert citations.project.text == "Demo & ECG v2.2 citation."
     assert [request.path for request in mock.request_history] == [
-        "/api/v1/projects/published/",
+        "/content/demo/",
         "/api/v1/projects/demo/versions/",
         "/api/v1/projects/demo/versions/2.2/",
     ]
+    assert mock.request_history[0].method == "HEAD"
 
 
 def test_get_citations_reports_missing_latest():
     with requests_mock.Mocker() as mock:
-        mock.get("https://physionet.org/api/v1/projects/published/", json=PUBLISHED[1:])
+        mock.head("https://physionet.org/content/demo/", status_code=404)
         with PhysioNetClient() as client, pytest.raises(NotFoundError, match="No latest published version"):
             client.projects.get_citations("demo")
     assert len(mock.request_history) == 1
 
 
-def test_get_citations_rejects_ambiguous_latest():
+@pytest.mark.parametrize("location", [
+    "https://other.example/content/demo/2.2/",
+    "/content/other/2.2/",
+    "/content/demo/2.2/files/",
+    "/content/demo/%2Fetc/",
+])
+def test_get_citations_rejects_invalid_latest_redirect(location):
     with requests_mock.Mocker() as mock:
-        mock.get("https://physionet.org/api/v1/projects/published/", json=PUBLISHED[:1] + [
-            {"slug": "demo", "version": "3.0", "is_latest_version": True, "title": "Demo"}
-        ])
-        with PhysioNetClient() as client, pytest.raises(PhysioNetAPIError, match="Multiple latest versions"):
+        mock.head("https://physionet.org/content/demo/", status_code=302,
+                  headers={"Location": location})
+        with PhysioNetClient() as client, pytest.raises(PhysioNetAPIError, match="Invalid latest-version redirect"):
             client.projects.get_citations("demo")
     assert len(mock.request_history) == 1
 
@@ -136,7 +136,7 @@ def test_cite_prints_project_and_standard_physionet_citation(capsys):
 
 def test_cite_without_version_shows_resolved_version(capsys):
     with requests_mock.Mocker() as mock:
-        register_project(mock, page=False, published=True)
+        register_project(mock, page=False, latest=True)
         status = run_cli(version=None)
 
     output = capsys.readouterr()
@@ -180,7 +180,7 @@ def test_cite_json_includes_text_and_bibtex(capsys):
 @pytest.mark.parametrize("format_flag", ["--bibtex", "--json"])
 def test_cite_without_version_supports_other_formats(capsys, format_flag):
     with requests_mock.Mocker() as mock:
-        register_project(mock, published=True)
+        register_project(mock, latest=True)
         status = run_cli(format_flag, version=None)
 
     output = capsys.readouterr()
@@ -195,7 +195,7 @@ def test_cite_without_version_supports_other_formats(capsys, format_flag):
 @pytest.mark.parametrize("version", ["2.2", None])
 def test_cite_bibtex_reports_when_project_has_none(capsys, version):
     with requests_mock.Mocker() as mock:
-        register_project(mock, published=version is None)
+        register_project(mock, latest=version is None)
         mock.get("https://physionet.org/content/demo/2.2/", text="<html>Legacy project</html>")
         status = run_cli("--bibtex", version=version)
 
