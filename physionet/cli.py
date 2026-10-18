@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from physionet.validate import validate_dataset, ValidationConfig
@@ -16,6 +17,22 @@ def main():
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    search_parser = subparsers.add_parser("search", help="Search published datasets and other projects")
+    search_parser.add_argument("query", help="Words to search for")
+    search_parser.add_argument(
+        "--resource-type", action="append", help="Filter by resource type (can be repeated)"
+    )
+    search_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
+
+    show_parser = subparsers.add_parser("show", help="Show metadata for a project version")
+    show_parser.add_argument("slug", help="Project identifier")
+    show_parser.add_argument("--version", required=True, help="Project version")
+    show_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
+
+    versions_parser = subparsers.add_parser("versions", help="List versions of a project")
+    versions_parser.add_argument("slug", help="Project identifier")
+    versions_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
 
     # Download subcommand
     download_parser = subparsers.add_parser(
@@ -104,7 +121,9 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "download":
+    if args.command in ("search", "show", "versions"):
+        return _handle_discovery(args)
+    elif args.command == "download":
         return _handle_download(args)
     elif args.command == "validate":
         return _handle_validate(args)
@@ -113,6 +132,55 @@ def main():
         return 0
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
+        return 1
+
+
+def _handle_discovery(args):
+    """Print project search results, metadata, or versions."""
+    from physionet.api.client import PhysioNetClient
+    from physionet.api.utils import format_size
+
+    try:
+        with PhysioNetClient() as client:
+            if args.command == "search":
+                projects = client.projects.search(args.query, resource_type=args.resource_type)
+                if args.json:
+                    print(json.dumps([asdict(project) for project in projects]))
+                elif not projects:
+                    print("No projects found.")
+                else:
+                    for project in projects:
+                        access = project.access_policy or "Access unknown"
+                        print(f"{project.slug} v{project.version}  {project.title}  [{access}]")
+            elif args.command == "show":
+                detail = client.projects.get_details(args.slug, args.version)
+                if args.json:
+                    print(json.dumps(asdict(detail)))
+                else:
+                    print(f"{detail.title} ({detail.slug} v{detail.version})")
+                    print(f"Access: {detail.access_policy or 'Unknown'}")
+                    print(f"Type: {detail.resource_type or 'Unknown'}")
+                    print(f"License: {(detail.license or {}).get('name', 'Unknown')}")
+                    print(f"DOI: {detail.doi or 'None'}")
+                    print(f"Size: {format_size(detail.main_storage_size)}")
+                    if detail.topics:
+                        print(f"Topics: {', '.join(detail.topics)}")
+                    if detail.source_url:
+                        print(f"PhysioNet page: {detail.source_url}")
+                    if detail.abstract:
+                        print(f"\n{detail.abstract}")
+            elif args.command == "versions":
+                versions = client.projects.list_versions(args.slug)
+                if args.json:
+                    print(json.dumps([asdict(version) for version in versions]))
+                elif not versions:
+                    print(f"No versions found for {args.slug}.")
+                else:
+                    for version in versions:
+                        print(f"{version.version}  {version.title}")
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
         return 1
 
 

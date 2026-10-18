@@ -30,6 +30,11 @@ class PublishedProject:
     dua: Optional[dict]
     main_storage_size: int
     compressed_storage_size: int
+    public_project_uuid: Optional[str] = None
+    resource_type: Optional[str] = None
+    access_policy: Optional[str] = None
+    topics: Optional[List[str]] = None
+    source_url: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "PublishedProject":
@@ -48,6 +53,11 @@ class PublishedProject:
             dua=data.get("dua"),
             main_storage_size=data.get("main_storage_size", 0),
             compressed_storage_size=data.get("compressed_storage_size", 0),
+            public_project_uuid=data.get("public_project_uuid"),
+            resource_type=data.get("resource_type"),
+            access_policy=data.get("access_policy"),
+            topics=data.get("topics"),
+            source_url=data.get("source_url"),
         )
 
 
@@ -66,6 +76,11 @@ class ProjectDetail:
     doi: str
     main_storage_size: int
     compressed_storage_size: int
+    public_project_uuid: Optional[str] = None
+    resource_type: Optional[str] = None
+    access_policy: Optional[str] = None
+    topics: Optional[List[str]] = None
+    source_url: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "ProjectDetail":
@@ -82,6 +97,11 @@ class ProjectDetail:
             doi=data.get("doi", ""),
             main_storage_size=data.get("main_storage_size", 0),
             compressed_storage_size=data.get("compressed_storage_size", 0),
+            public_project_uuid=data.get("public_project_uuid"),
+            resource_type=data.get("resource_type"),
+            access_policy=data.get("access_policy"),
+            topics=data.get("topics"),
+            source_url=data.get("source_url"),
         )
 
 

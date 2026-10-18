@@ -40,6 +40,11 @@ def test_published_project_from_dict():
         "dua": None,
         "main_storage_size": 1000000,
         "compressed_storage_size": 500000,
+        "public_project_uuid": "a-project-id",
+        "resource_type": "Database",
+        "access_policy": "Open",
+        "topics": ["ECG", "Critical Care"],
+        "source_url": "https://physionet.org/content/mimic-iv-demo/2.2/",
     }
 
     project = PublishedProject.from_dict(data)
@@ -51,6 +56,11 @@ def test_published_project_from_dict():
     assert project.core_doi == "10.1234/test"
     assert project.is_latest_version is True
     assert project.main_storage_size == 1000000
+    assert project.access_policy == "Open"
+    assert project.resource_type == "Database"
+    assert project.topics == ["ECG", "Critical Care"]
+    assert project.source_url == "https://physionet.org/content/mimic-iv-demo/2.2/"
+    assert project.public_project_uuid == "a-project-id"
 
 
 def test_published_project_from_dict_with_missing_fields():
@@ -71,6 +81,8 @@ def test_published_project_from_dict_with_missing_fields():
     assert project.core_doi is None
     assert project.is_latest_version is False
     assert project.main_storage_size == 0
+    assert project.access_policy is None
+    assert project.topics is None
 
 
 def test_project_detail_from_dict():
@@ -87,6 +99,11 @@ def test_project_detail_from_dict():
         "doi": "10.1234/test",
         "main_storage_size": 1000000,
         "compressed_storage_size": 500000,
+        "public_project_uuid": "a-project-id",
+        "resource_type": "Database",
+        "access_policy": "Credentialed",
+        "topics": ["Critical Care"],
+        "source_url": "https://physionet.org/content/test-project/1.0/",
     }
 
     detail = ProjectDetail.from_dict(data)
@@ -96,6 +113,11 @@ def test_project_detail_from_dict():
     assert detail.version == "1.0"
     assert detail.doi == "10.1234/test"
     assert detail.project_home_page == "https://example.com"
+    assert detail.access_policy == "Credentialed"
+    assert detail.resource_type == "Database"
+    assert detail.topics == ["Critical Care"]
+    assert detail.source_url == "https://physionet.org/content/test-project/1.0/"
+    assert detail.public_project_uuid == "a-project-id"
 
 
 def test_project_detail_from_dict_with_missing_fields():
@@ -114,6 +136,8 @@ def test_project_detail_from_dict_with_missing_fields():
     assert detail.project_home_page is None
     assert detail.doi == ""
     assert detail.main_storage_size == 0
+    assert detail.access_policy is None
+    assert detail.topics is None
 
 
 def test_paginated_response_creation():
