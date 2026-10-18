@@ -1,5 +1,10 @@
+from html import unescape
 from typing import List, Optional, Iterator
+from urllib.parse import quote
+
 from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail
+from physionet.api.exceptions import NotFoundError, PhysioNetAPIError
+from physionet.citation import Citation, CitationBundle, ProjectBibTeXParser, STANDARD_PHYSIONET_CITATIONS
 
 
 class ProjectsAPI:
@@ -98,6 +103,46 @@ class ProjectsAPI:
         data = response.json()
 
         return ProjectDetail.from_dict(data)
+
+    def get_citations(self, project_slug: str, version: str, include_bibtex: bool = False) -> CitationBundle:
+        """Return the version's citation and both standard PhysioNet citations.
+
+        The API supplies the project citation. BibTeX is read from the published
+        project page because the API does not currently include that format.
+        """
+        project_version = next(
+            (item for item in self.list_versions(project_slug) if item.version == version), None
+        )
+        if project_version is None:
+            raise NotFoundError(f"Version '{version}' not found for project '{project_slug}'")
+
+        details = self.get_details(project_slug, version)
+        if not project_version.citation:
+            raise PhysioNetAPIError(
+                f"PhysioNet does not provide a citation for {project_slug} v{version}; "
+                f"see {details.source_url or self.client.base_url}"
+            )
+
+        page_url = (
+            f"{self.client.base_url}/content/{quote(project_slug, safe='')}/{quote(version, safe='')}/"
+        )
+        bibtex = None
+        if include_bibtex:
+            response = self.client.session.get(page_url, timeout=self.client.timeout)
+            response.raise_for_status()
+            parser = ProjectBibTeXParser()
+            parser.feed(response.text)
+            bibtex = parser.bibtex
+
+        return CitationBundle(
+            project=Citation(
+                text=unescape(project_version.citation),
+                bibtex=bibtex,
+                doi=details.doi or None,
+                url=details.source_url or page_url,
+            ),
+            physionet=STANDARD_PHYSIONET_CITATIONS,
+        )
 
     def download_checksums(self, project_slug: str, version: str, output_path: str):
         """

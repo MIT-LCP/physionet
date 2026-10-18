@@ -1,4 +1,5 @@
 from physionet.api import PhysioNetClient
+from physionet.citation import Citation, CitationBundle
 from physionet.validate import validate_dataset, ValidationConfig, ValidationResult
 from physionet.download import download
 
@@ -10,6 +11,8 @@ except Exception:
 
 __all__ = [
     "PhysioNetClient",
+    "Citation",
+    "CitationBundle",
     "validate_dataset",
     "ValidationConfig",
     "ValidationResult",
