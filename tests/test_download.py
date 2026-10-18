@@ -498,6 +498,29 @@ class TestDownload:
 
         assert (tmp_path / "demo-1.0" / "data.csv").read_bytes() == file_content
 
+    def test_auto_s3_does_not_receive_physionet_credentials(self, tmp_path):
+        file_content = b"hello world"
+        manifest = self._make_manifest([("data.csv", file_content)])
+        versions_response = [
+            {"slug": "demo", "title": "Demo", "version": "1.0", "abstract": "", "citation": ""}
+        ]
+
+        with rm.Mocker() as mock:
+            mock.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
+            mock.get("https://physionet.org/files/demo/1.0/SHA256SUMS.txt", text=manifest)
+            mock.head(f"{S3_BASE_URL}/demo/1.0/SHA256SUMS.txt", status_code=200)
+            mock.get(f"{S3_BASE_URL}/demo/1.0/data.csv", content=file_content)
+
+            download(
+                "demo", version="1.0", output_dir=str(tmp_path),
+                username="testuser", password="testpass",
+            )
+
+        requests_by_url = {request.url: request for request in mock.request_history}
+        assert "Authorization" in requests_by_url["https://physionet.org/files/demo/1.0/SHA256SUMS.txt"].headers
+        assert "Authorization" not in requests_by_url[f"{S3_BASE_URL}/demo/1.0/data.csv"].headers
+        assert (tmp_path / "demo-1.0" / "data.csv").read_bytes() == file_content
+
     def test_download_not_found(self, tmp_path):
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/nonexistent/versions/", status_code=404, json={"error": "Not found"})
