@@ -70,6 +70,13 @@ physionet download mimic-iv
 
 Downloads support automatic resume, SHA256 checksum verification, and retry on transient errors.
 
+If any selected file fails, the command reports the failed file and exits with status `1`;
+successful files remain in the destination. In Python, `download()` raises
+`DownloadError` with the failed paths and causes. Pressing Ctrl-C exits the command
+with status `130` and leaves the incomplete file in place so a later HTTP download
+can resume it. Explicit AWS downloads currently restart incomplete files on the
+next attempt.
+
 ### `physionet validate`
 
 Validate a dataset before submission to PhysioNet. The validator checks for
@@ -139,6 +146,15 @@ download("mimic-iv-demo", version="2.2", output_dir="/data")
 
 # Download from S3 using boto3
 download("mimic-iv-demo", source="aws")
+
+# Handle a partial failure while keeping successfully downloaded files
+from physionet.download import DownloadError
+
+try:
+    download("mimic-iv-demo", version="2.2", output_dir="/data")
+except DownloadError as error:
+    for path, cause in error.failures:
+        print(f"{path}: {cause}")
 ```
 
 ### Validation
