@@ -238,12 +238,51 @@ class TestDownloadFile:
                 "https://example.com/file.txt",
                 content=part2,
                 status_code=206,
-                headers={"Content-Length": str(len(part2))},
+                headers={
+                    "Content-Length": str(len(part2)),
+                    "Content-Range": f"bytes {len(part1)}-{len(full_content) - 1}/{len(full_content)}",
+                },
             )
             session = requests.Session()
             _download_file("https://example.com/file.txt", dest, expected_hash, session)
 
         assert dest.read_bytes() == full_content
+
+    def test_resume_restarts_when_server_ignores_range(self, tmp_path):
+        content = b"complete file"
+        dest = tmp_path / "output.txt"
+        dest.write_bytes(content[:4])
+        expected_hash = hashlib.sha256(content).hexdigest()
+
+        with rm.Mocker() as mock:
+            mock.get("https://example.com/file.txt", content=content, status_code=200)
+            size = _download_file("https://example.com/file.txt", dest, expected_hash, requests.Session())
+            assert mock.last_request.headers["Range"] == "bytes=4-"
+
+        assert size == len(content)
+        assert dest.read_bytes() == content
+
+    def test_resume_restarts_when_content_range_is_wrong(self, tmp_path):
+        content = b"complete file"
+        dest = tmp_path / "output.txt"
+        dest.write_bytes(content[:4])
+        expected_hash = hashlib.sha256(content).hexdigest()
+
+        with rm.Mocker() as mock:
+            mock.get(
+                "https://example.com/file.txt",
+                [
+                    {"content": b"wrong bytes", "status_code": 206,
+                     "headers": {"Content-Range": "bytes 5-15/16"}},
+                    {"content": content, "status_code": 200},
+                ],
+            )
+            size = _download_file("https://example.com/file.txt", dest, expected_hash, requests.Session())
+            assert mock.request_history[0].headers["Range"] == "bytes=4-"
+            assert "Range" not in mock.request_history[1].headers
+
+        assert size == len(content)
+        assert dest.read_bytes() == content
 
     def test_download_403(self, tmp_path):
         dest = tmp_path / "output.txt"
@@ -543,9 +582,13 @@ class TestDownloadFileInterrupt:
         assert dest.read_bytes() == b"partial data"
 
         remainder = b" and the rest"
-        expected_hash = hashlib.sha256(b"partial data" + remainder).hexdigest()
+        full_content = b"partial data" + remainder
+        expected_hash = hashlib.sha256(full_content).hexdigest()
         with rm.Mocker() as mock:
-            mock.get("https://example.com/file.txt", content=remainder, status_code=206)
+            mock.get(
+                "https://example.com/file.txt", content=remainder, status_code=206,
+                headers={"Content-Range": f"bytes 12-{len(full_content) - 1}/{len(full_content)}"},
+            )
             _download_file("https://example.com/file.txt", dest, expected_hash, requests.Session())
             assert mock.last_request.headers["Range"] == "bytes=12-"
 

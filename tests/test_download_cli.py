@@ -39,6 +39,7 @@ def test_cli_exits_nonzero_when_a_file_fails(tmp_path, capsys):
     assert status == 1
     assert "1 failed" in output.out
     assert "bad.csv" in output.err
+    assert output.err.count("https://physionet.org/content/demo/") == 1
     assert (tmp_path / "demo-1.0" / "good.csv").read_bytes() == good_content
 
 

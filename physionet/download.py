@@ -3,6 +3,7 @@
 import fnmatch
 import hashlib
 import os
+import re
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -367,14 +368,29 @@ def _download_file(
 
     response = session.get(url, headers=headers, stream=True, timeout=60)
 
-    # If we requested a range and got 416, file is already complete
-    if response.status_code == 416:
+    # A server may ignore Range or return a different range. Only append bytes
+    # when a 206 response explicitly starts where the local file ends.
+    restart = False
+    if headers and response.status_code == 416:
         if _verify_checksum(dest, expected_hash):
+            response.close()
             return 0
-        # Hash mismatch — re-download from scratch
-        existing_size = 0
+        restart = True
+    elif headers and response.status_code == 200:
         mode = "wb"
+    elif headers and response.status_code == 206:
+        restart = not _range_starts_at(response.headers.get("Content-Range", ""), existing_size)
+    elif not headers and response.status_code == 206:
+        response.close()
+        raise ValueError("Server returned a partial response without a Range request")
+
+    if restart:
+        response.close()
         response = session.get(url, stream=True, timeout=60)
+        mode = "wb"
+        if response.status_code == 206:
+            response.close()
+            raise ValueError("Server returned a partial response to a full-file request")
 
     if response.status_code == 403:
         error_msg = response.text or "Access denied"
@@ -407,6 +423,16 @@ def _download_file(
         raise ValueError(f"Checksum verification failed for {dest.name}")
 
     return downloaded
+
+
+def _range_starts_at(content_range: str, expected_start: int) -> bool:
+    """Check that Content-Range describes a valid range at the local offset."""
+    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", content_range.strip(), re.IGNORECASE)
+    if not match:
+        return False
+    start, end = int(match.group(1)), int(match.group(2))
+    total = match.group(3)
+    return start == expected_start and end >= start and (total == "*" or int(total) > end)
 
 
 def _verify_checksum(path: Path, expected_hash: str) -> bool:

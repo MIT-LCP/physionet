@@ -74,8 +74,9 @@ If any selected file fails, the command reports the failed file and exits with s
 successful files remain in the destination. In Python, `download()` raises
 `DownloadError` with the failed paths and causes. Pressing Ctrl-C exits the command
 with status `130` and leaves the incomplete file in place so a later HTTP download
-can resume it. Explicit AWS downloads currently restart incomplete files on the
-next attempt.
+can resume it. If the server ignores the resume request, the client downloads the
+file from the beginning. Explicit AWS downloads currently restart incomplete files
+on the next attempt.
 
 ### `physionet validate`
 

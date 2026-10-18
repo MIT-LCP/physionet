@@ -136,6 +136,11 @@ def _handle_download(args):
         return 0
     except DownloadError as e:
         print(f"Download incomplete: {e}", file=sys.stderr)
+        if any(isinstance(cause, ForbiddenError) for _, cause in e.failures):
+            print(
+                f"Visit https://physionet.org/content/{args.slug}/ for access requirements.",
+                file=sys.stderr,
+            )
         return 1
     except KeyboardInterrupt:
         return 130
