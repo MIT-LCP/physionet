@@ -15,6 +15,33 @@ Requires Python 3.9 or later.
 The package provides a `physionet` command-line tool. You can also run it as a
 module with `python -m physionet`.
 
+### Find and inspect a dataset
+
+Search published projects, inspect a specific version, then download the files
+you need:
+
+```bash
+physionet search "ECG" --resource-type database
+physionet versions mimic-iv-demo
+physionet show mimic-iv-demo --version 2.2
+physionet download mimic-iv-demo --version 2.2 --include "*.csv"
+```
+
+Search results show the project slug, version, title, and access policy. `show`
+displays the license, DOI, size, topics, and a link to the PhysioNet page when
+available. Specify a version with `show` so the metadata refers to the exact
+dataset you intend to use. The PhysioNet page explains any access requirements;
+the server decides whether your account can download a project.
+
+All three discovery commands support `--json` for scripts. JSON is written to
+stdout, and errors are written to stderr:
+
+```bash
+physionet search "ECG" --json > projects.json
+physionet show mimic-iv-demo --version 2.2 --json > project.json
+physionet versions mimic-iv-demo --json > versions.json
+```
+
 ### `physionet download`
 
 Download datasets from PhysioNet:
@@ -210,6 +237,8 @@ for project in projects[:5]:
 # Search for projects
 ecg_projects = client.projects.search('ECG')
 print(f"Found {len(ecg_projects)} ECG-related projects")
+for project in ecg_projects:
+    print(project.slug, project.version, project.access_policy, project.source_url)
 
 # Get all versions of a project
 versions = client.projects.list_versions('mimic-iv-demo')
@@ -222,6 +251,8 @@ print(f"Title: {details.title}")
 print(f"DOI: {details.doi}")
 print(f"Published: {details.publish_datetime}")
 print(f"Size: {details.main_storage_size} bytes")
+print(f"Access policy: {details.access_policy}")
+print(f"Topics: {details.topics}")
 ```
 
 ### Authenticated Requests
