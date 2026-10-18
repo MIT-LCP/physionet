@@ -3,6 +3,8 @@
 import fnmatch
 import hashlib
 import os
+import re
+import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -17,6 +19,18 @@ from physionet.api.utils import format_size, get_credentials_from_env
 
 S3_BASE_URL = "https://physionet-open.s3.amazonaws.com"
 S3_BUCKET = "physionet-open"
+
+
+class DownloadError(Exception):
+    """One or more files failed while downloading a project."""
+
+    def __init__(self, destination: Path, failures: List[Tuple[str, Exception]], downloaded: int, skipped: int):
+        self.destination = destination
+        self.failures = failures
+        self.downloaded = downloaded
+        self.skipped = skipped
+        details = "; ".join(f"{path}: {error}" for path, error in failures)
+        super().__init__(f"{len(failures)} file(s) failed ({details})")
 
 
 def download(
@@ -53,7 +67,9 @@ def download(
 
     Raises:
         NotFoundError: If the project or version is not found
-        ForbiddenError: If access is denied
+        ForbiddenError: If access is denied before file transfers start
+        DownloadError: If one or more file transfers fail, including access denial
+        KeyboardInterrupt: If the download is interrupted
     """
     if username is None or password is None:
         env_user, env_pass = get_credentials_from_env()
@@ -107,7 +123,7 @@ def download(
 
         skipped = 0
         downloaded = 0
-        failed = 0
+        failures = []
 
         progress = tqdm(files, desc="Overall", unit="file")
         try:
@@ -133,18 +149,25 @@ def download(
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:
-                    print(f"\nError downloading {filepath}: {e}")
-                    failed += 1
+                    print(f"\nError downloading {filepath}: {e}", file=sys.stderr)
+                    failures.append((filepath, e))
         except KeyboardInterrupt:
+            print(
+                f"\nDownload interrupted. {downloaded} downloaded, {skipped} skipped before interruption.",
+                file=sys.stderr,
+            )
+            raise
+        finally:
             progress.close()
-            print()
-            print(f"\nDownload interrupted. {downloaded} downloaded, {skipped} skipped before interruption.")
-            return dest
 
         print()
-        print(f"Complete: {downloaded} downloaded, {skipped} skipped, {failed} failed")
+        outcome = "Incomplete" if failures else "Complete"
+        print(f"{outcome}: {downloaded} downloaded, {skipped} skipped, {len(failures)} failed")
         if total_size > 0:
             print(f"Total downloaded: {format_size(total_size)}")
+
+        if failures:
+            raise DownloadError(dest, failures, downloaded, skipped)
 
         return dest
     finally:
@@ -282,26 +305,21 @@ def _download_file_s3(
     total_size = head["ContentLength"]
 
     downloaded = 0
-    try:
-        with open(dest, "wb") as f:
-            with tqdm(
-                total=total_size,
-                unit="B",
-                unit_scale=True,
-                desc=dest.name,
-                leave=False,
-            ) as pbar:
+    with open(dest, "wb") as f:
+        with tqdm(
+            total=total_size,
+            unit="B",
+            unit_scale=True,
+            desc=dest.name,
+            leave=False,
+        ) as pbar:
 
-                def progress_callback(bytes_amount):
-                    nonlocal downloaded
-                    downloaded += bytes_amount
-                    pbar.update(bytes_amount)
+            def progress_callback(bytes_amount):
+                nonlocal downloaded
+                downloaded += bytes_amount
+                pbar.update(bytes_amount)
 
-                s3.download_fileobj(bucket, key, f, Callback=progress_callback)
-    except KeyboardInterrupt:
-        if dest.exists():
-            dest.unlink()
-        raise
+            s3.download_fileobj(bucket, key, f, Callback=progress_callback)
 
     # Verify checksum
     if not _verify_checksum(dest, expected_hash):
@@ -350,14 +368,29 @@ def _download_file(
 
     response = session.get(url, headers=headers, stream=True, timeout=60)
 
-    # If we requested a range and got 416, file is already complete
-    if response.status_code == 416:
+    # A server may ignore Range or return a different range. Only append bytes
+    # when a 206 response explicitly starts where the local file ends.
+    restart = False
+    if headers and response.status_code == 416:
         if _verify_checksum(dest, expected_hash):
+            response.close()
             return 0
-        # Hash mismatch — re-download from scratch
-        existing_size = 0
+        restart = True
+    elif headers and response.status_code == 200:
         mode = "wb"
+    elif headers and response.status_code == 206:
+        restart = not _range_starts_at(response.headers.get("Content-Range", ""), existing_size)
+    elif not headers and response.status_code == 206:
+        response.close()
+        raise ValueError("Server returned a partial response without a Range request")
+
+    if restart:
+        response.close()
         response = session.get(url, stream=True, timeout=60)
+        mode = "wb"
+        if response.status_code == 206:
+            response.close()
+            raise ValueError("Server returned a partial response to a full-file request")
 
     if response.status_code == 403:
         error_msg = response.text or "Access denied"
@@ -370,24 +403,19 @@ def _download_file(
     total = int(content_length) if content_length else None
     downloaded = 0
 
-    try:
-        with open(dest, mode) as f:
-            with tqdm(
-                total=total,
-                initial=0,
-                unit="B",
-                unit_scale=True,
-                desc=dest.name,
-                leave=False,
-            ) as pbar:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    pbar.update(len(chunk))
-    except KeyboardInterrupt:
-        if dest.exists():
-            dest.unlink()
-        raise
+    with open(dest, mode) as f:
+        with tqdm(
+            total=total,
+            initial=0,
+            unit="B",
+            unit_scale=True,
+            desc=dest.name,
+            leave=False,
+        ) as pbar:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+                downloaded += len(chunk)
+                pbar.update(len(chunk))
 
     # Verify checksum
     if not _verify_checksum(dest, expected_hash):
@@ -395,6 +423,16 @@ def _download_file(
         raise ValueError(f"Checksum verification failed for {dest.name}")
 
     return downloaded
+
+
+def _range_starts_at(content_range: str, expected_start: int) -> bool:
+    """Check that Content-Range describes a valid range at the local offset."""
+    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", content_range.strip(), re.IGNORECASE)
+    if not match:
+        return False
+    start, end = int(match.group(1)), int(match.group(2))
+    total = match.group(3)
+    return start == expected_start and end >= start and (total == "*" or int(total) > end)
 
 
 def _verify_checksum(path: Path, expected_hash: str) -> bool:

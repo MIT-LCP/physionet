@@ -118,7 +118,7 @@ def main():
 
 def _handle_download(args):
     """Handle the download subcommand."""
-    from physionet.download import download
+    from physionet.download import DownloadError, download
     from physionet.api.exceptions import ForbiddenError, NotFoundError
 
     try:
@@ -134,6 +134,16 @@ def _handle_download(args):
             password=args.password,
         )
         return 0
+    except DownloadError as e:
+        print(f"Download incomplete: {e}", file=sys.stderr)
+        if any(isinstance(cause, ForbiddenError) for _, cause in e.failures):
+            print(
+                f"Visit https://physionet.org/content/{args.slug}/ for access requirements.",
+                file=sys.stderr,
+            )
+        return 1
+    except KeyboardInterrupt:
+        return 130
     except NotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1

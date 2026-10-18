@@ -13,6 +13,7 @@ import requests
 import requests_mock as rm
 
 from physionet.download import (
+    DownloadError,
     download,
     _parse_manifest,
     _filter_files,
@@ -237,12 +238,51 @@ class TestDownloadFile:
                 "https://example.com/file.txt",
                 content=part2,
                 status_code=206,
-                headers={"Content-Length": str(len(part2))},
+                headers={
+                    "Content-Length": str(len(part2)),
+                    "Content-Range": f"bytes {len(part1)}-{len(full_content) - 1}/{len(full_content)}",
+                },
             )
             session = requests.Session()
             _download_file("https://example.com/file.txt", dest, expected_hash, session)
 
         assert dest.read_bytes() == full_content
+
+    def test_resume_restarts_when_server_ignores_range(self, tmp_path):
+        content = b"complete file"
+        dest = tmp_path / "output.txt"
+        dest.write_bytes(content[:4])
+        expected_hash = hashlib.sha256(content).hexdigest()
+
+        with rm.Mocker() as mock:
+            mock.get("https://example.com/file.txt", content=content, status_code=200)
+            size = _download_file("https://example.com/file.txt", dest, expected_hash, requests.Session())
+            assert mock.last_request.headers["Range"] == "bytes=4-"
+
+        assert size == len(content)
+        assert dest.read_bytes() == content
+
+    def test_resume_restarts_when_content_range_is_wrong(self, tmp_path):
+        content = b"complete file"
+        dest = tmp_path / "output.txt"
+        dest.write_bytes(content[:4])
+        expected_hash = hashlib.sha256(content).hexdigest()
+
+        with rm.Mocker() as mock:
+            mock.get(
+                "https://example.com/file.txt",
+                [
+                    {"content": b"wrong bytes", "status_code": 206,
+                     "headers": {"Content-Range": "bytes 5-15/16"}},
+                    {"content": content, "status_code": 200},
+                ],
+            )
+            size = _download_file("https://example.com/file.txt", dest, expected_hash, requests.Session())
+            assert mock.request_history[0].headers["Range"] == "bytes=4-"
+            assert "Range" not in mock.request_history[1].headers
+
+        assert size == len(content)
+        assert dest.read_bytes() == content
 
     def test_download_403(self, tmp_path):
         dest = tmp_path / "output.txt"
@@ -353,7 +393,7 @@ class TestDownloadFileS3:
 
         assert not dest.exists()
 
-    def test_partial_file_deleted_on_interrupt(self, tmp_path):
+    def test_partial_file_kept_on_interrupt(self, tmp_path):
         dest = tmp_path / "output.txt"
 
         mock_s3 = MagicMock()
@@ -370,7 +410,7 @@ class TestDownloadFileS3:
             with pytest.raises(KeyboardInterrupt):
                 _download_file_s3("physionet-open", "demo/1.0/file.txt", dest, "fakehash")
 
-        assert not dest.exists()
+        assert dest.read_bytes() == b"partial"
 
 
 # --- Full download integration ---
@@ -481,19 +521,47 @@ class TestDownload:
                 text="You must sign the DUA",
             )
 
-            download("restricted", version="1.0", output_dir=str(tmp_path), base_url="https://physionet.org")
+            with pytest.raises(DownloadError) as exc_info:
+                download("restricted", version="1.0", output_dir=str(tmp_path), base_url="https://physionet.org")
 
         captured = capsys.readouterr()
         assert "1 failed" in captured.out
+        assert exc_info.value.failures[0][0] == "data.csv"
+        assert isinstance(exc_info.value.failures[0][1], ForbiddenError)
         assert not (tmp_path / "restricted-1.0" / "data.csv").exists()
+
+    def test_download_reports_partial_failure_and_preserves_successes(self, tmp_path):
+        good_content = b"good data"
+        manifest = self._make_manifest([("good.csv", good_content), ("bad.csv", b"expected data")])
+        versions_response = [
+            {"slug": "demo", "title": "Demo", "version": "1.0", "abstract": "", "citation": ""}
+        ]
+
+        with rm.Mocker() as m:
+            m.get("https://physionet.org/api/v1/projects/demo/versions/", json=versions_response)
+            m.get("https://physionet.org/files/demo/1.0/SHA256SUMS.txt", text=manifest)
+            m.get("https://physionet.org/files/demo/1.0/good.csv", content=good_content)
+            m.get("https://physionet.org/files/demo/1.0/bad.csv", status_code=503)
+
+            with pytest.raises(DownloadError) as exc_info:
+                download("demo", version="1.0", output_dir=str(tmp_path), source="physionet", retries=0)
+
+        error = exc_info.value
+        assert error.destination == tmp_path / "demo-1.0"
+        assert error.downloaded == 1
+        assert error.skipped == 0
+        assert len(error.failures) == 1
+        assert error.failures[0][0] == "bad.csv"
+        assert "503" in str(error.failures[0][1])
+        assert (error.destination / "good.csv").read_bytes() == good_content
 
 
 # --- Keyboard interrupt handling ---
 
 
 class TestDownloadFileInterrupt:
-    def test_partial_file_deleted_on_interrupt(self, tmp_path):
-        """Partially downloaded file is deleted when KeyboardInterrupt occurs."""
+    def test_partial_file_kept_on_interrupt(self, tmp_path):
+        """An interrupted HTTP transfer retains bytes for a later resume."""
         dest = tmp_path / "output.txt"
 
         def interrupted_iter(chunk_size=8192):
@@ -511,7 +579,20 @@ class TestDownloadFileInterrupt:
         with pytest.raises(KeyboardInterrupt):
             _download_file("https://example.com/file.txt", dest, "fakehash", mock_session)
 
-        assert not dest.exists(), "Partial file should be deleted on KeyboardInterrupt"
+        assert dest.read_bytes() == b"partial data"
+
+        remainder = b" and the rest"
+        full_content = b"partial data" + remainder
+        expected_hash = hashlib.sha256(full_content).hexdigest()
+        with rm.Mocker() as mock:
+            mock.get(
+                "https://example.com/file.txt", content=remainder, status_code=206,
+                headers={"Content-Range": f"bytes 12-{len(full_content) - 1}/{len(full_content)}"},
+            )
+            _download_file("https://example.com/file.txt", dest, expected_hash, requests.Session())
+            assert mock.last_request.headers["Range"] == "bytes=12-"
+
+        assert dest.read_bytes() == b"partial data and the rest"
 
 
 class TestDownloadInterrupt:
@@ -523,8 +604,8 @@ class TestDownloadInterrupt:
             lines.append(f"{h}  {path}")
         return "\n".join(lines)
 
-    def test_download_interrupted_returns_gracefully(self, tmp_path, capsys):
-        """download() catches KeyboardInterrupt and prints summary."""
+    def test_download_interrupted_propagates(self, tmp_path, capsys):
+        """download() reports progress and propagates KeyboardInterrupt."""
         file1_content = b"file one"
         file2_content = b"file two"
         file1_hash = hashlib.sha256(file1_content).hexdigest()
@@ -542,6 +623,7 @@ class TestDownloadInterrupt:
             if call_count == 1:
                 dest.write_bytes(file1_content)
                 return len(file1_content)
+            dest.write_bytes(b"partial")
             raise KeyboardInterrupt()
 
         with rm.Mocker() as m:
@@ -550,14 +632,16 @@ class TestDownloadInterrupt:
             m.head(f"{S3_BASE_URL}/demo/1.0/SHA256SUMS.txt", status_code=404)
 
             with patch.object(download_module, "_download_file", side_effect=mock_download_file):
-                result = download(
-                    "demo",
-                    version="1.0",
-                    output_dir=str(tmp_path),
-                    base_url="https://physionet.org",
-                )
+                with pytest.raises(KeyboardInterrupt):
+                    download(
+                        "demo",
+                        version="1.0",
+                        output_dir=str(tmp_path),
+                        base_url="https://physionet.org",
+                    )
 
         captured = capsys.readouterr()
-        assert "interrupted" in captured.out.lower()
-        assert "1 downloaded" in captured.out
-        assert result == tmp_path / "demo-1.0"
+        assert "interrupted" in captured.err.lower()
+        assert "1 downloaded" in captured.err
+        assert (tmp_path / "demo-1.0" / "file1.csv").read_bytes() == file1_content
+        assert (tmp_path / "demo-1.0" / "file2.csv").read_bytes() == b"partial"
