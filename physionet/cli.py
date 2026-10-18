@@ -204,9 +204,9 @@ def _handle_discovery(args):
                 else:
                     print(f"Project citation ({args.slug} v{citations.version}):")
                     print(citations.project.text)
-                    print("\nStandard PhysioNet citations:")
-                    for number, citation in enumerate(citations.physionet, start=1):
-                        print(f"{number}. {citation.text}")
+                    print("\nStandard PhysioNet citation:")
+                    for citation in citations.physionet:
+                        print(citation.text)
                     print(f"\nSee {citations.project.url} for any additional publication citations.")
         return 0
     except Exception as e:

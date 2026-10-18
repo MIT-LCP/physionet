@@ -51,7 +51,7 @@ def run_cli(*arguments, version="2.2"):
         return main()
 
 
-def test_get_citations_uses_exact_version_and_includes_both_standard_references():
+def test_get_citations_uses_exact_version_and_current_standard_reference():
     with requests_mock.Mocker() as mock:
         register_project(mock, page=False)
         with PhysioNetClient() as client:
@@ -62,10 +62,7 @@ def test_get_citations_uses_exact_version_and_includes_both_standard_references(
     assert citations.project.doi == "10.1234/demo"
     assert citations.project.url == "https://physionet.org/content/demo/2.2/"
     assert citations.version == "2.2"
-    assert len(citations.physionet) == 2
-    assert {item.doi for item in citations.physionet} == {
-        "10.1038/s44360-026-00096-z", "10.1161/01.CIR.101.23.e215"
-    }
+    assert [item.doi for item in citations.physionet] == ["10.1038/s44360-026-00096-z"]
     assert len(mock.request_history) == 2
 
 
@@ -121,7 +118,7 @@ def test_get_citations_rejects_ambiguous_latest():
     assert len(mock.request_history) == 1
 
 
-def test_cite_prints_project_and_standard_physionet_citations(capsys):
+def test_cite_prints_project_and_standard_physionet_citation(capsys):
     with requests_mock.Mocker() as mock:
         register_project(mock, page=False)
         status = run_cli()
@@ -129,9 +126,10 @@ def test_cite_prints_project_and_standard_physionet_citations(capsys):
     output = capsys.readouterr()
     assert status == 0
     assert "Demo & ECG v2.2 citation." in output.out
-    assert "Standard PhysioNet citations:" in output.out
+    assert "Standard PhysioNet citation:" in output.out
     assert "10.1038/s44360-026-00096-z" in output.out
-    assert "10.1161/01.CIR.101.23.e215" in output.out
+    assert "\n1. " not in output.out
+    assert "10.1161/01.CIR.101.23.e215" not in output.out
     assert DETAIL["source_url"] in output.out
     assert output.err == ""
 
@@ -148,7 +146,7 @@ def test_cite_without_version_shows_resolved_version(capsys):
     assert output.err == ""
 
 
-def test_cite_bibtex_prints_three_copyable_entries(capsys):
+def test_cite_bibtex_prints_two_copyable_entries(capsys):
     with requests_mock.Mocker() as mock:
         register_project(mock)
         status = run_cli("--bibtex")
@@ -156,8 +154,9 @@ def test_cite_bibtex_prints_three_copyable_entries(capsys):
     output = capsys.readouterr()
     assert status == 0
     assert output.out.startswith(PROJECT_BIBTEX)
-    assert output.out.count("@article{") == 3
-    assert "Standard PhysioNet citations:" not in output.out
+    assert output.out.count("@article{") == 2
+    assert "goldberger_physiobank_2000" not in output.out
+    assert "Standard PhysioNet citation:" not in output.out
     assert output.err == ""
 
 
@@ -173,7 +172,8 @@ def test_cite_json_includes_text_and_bibtex(capsys):
     assert data["project"]["text"] == "Demo & ECG v2.2 citation."
     assert data["version"] == "2.2"
     assert data["project"]["bibtex"] == PROJECT_BIBTEX
-    assert len(data["physionet"]) == 2
+    assert len(data["physionet"]) == 1
+    assert data["physionet"][0]["doi"] == "10.1038/s44360-026-00096-z"
     assert all(item["bibtex"] for item in data["physionet"])
 
 

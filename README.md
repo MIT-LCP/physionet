@@ -44,8 +44,8 @@ physionet versions mimic-iv-demo --json > versions.json
 
 ### Cite a dataset
 
-Get the citation for the latest published project version, followed by the two
-standard PhysioNet citations requested on the [PhysioNet About page](https://physionet.org/about/):
+Get the citation for the latest published project version, followed by the
+standard PhysioNet citation:
 
 ```bash
 physionet cite mimic-iv-demo
@@ -58,8 +58,8 @@ the resolved version so you can record it in your research. The project citation
 text comes from PhysioNet's version API. For `--bibtex` and `--json`, the package
 reads the project's BibTeX from its published PhysioNet page. Some older
 projects do not provide BibTeX; `--bibtex` reports
-that clearly instead of making up author information. The two standard
-PhysioNet references are included in all output formats.
+that clearly instead of making up author information. The standard
+PhysioNet reference is included in all output formats.
 Check the project page for any additional original publication citations.
 
 In Python, use the existing project client:

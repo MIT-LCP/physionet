@@ -105,7 +105,7 @@ class ProjectsAPI:
         return ProjectDetail.from_dict(data)
 
     def get_citations(self, project_slug: str, version: Optional[str] = None, include_bibtex: bool = False) -> CitationBundle:
-        """Return the project's citation and both standard PhysioNet citations.
+        """Return the project's citation and the standard PhysioNet citation.
 
         The API supplies the project citation. BibTeX is read from the published
         project page because the API does not currently include that format.
