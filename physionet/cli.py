@@ -36,7 +36,7 @@ def main():
 
     cite_parser = subparsers.add_parser("cite", help="Get project and standard PhysioNet citations")
     cite_parser.add_argument("slug", help="Project identifier")
-    cite_parser.add_argument("--version", required=True, help="Project version")
+    cite_parser.add_argument("--version", help="Project version (default: latest)")
     citation_output = cite_parser.add_mutually_exclusive_group()
     citation_output.add_argument("--bibtex", action="store_true", help="Print BibTeX entries")
     citation_output.add_argument("--json", action="store_true", help="Print citation data as JSON")
@@ -192,7 +192,7 @@ def _handle_discovery(args):
                 if args.bibtex:
                     if not citations.project.bibtex:
                         raise ValueError(
-                            f"BibTeX is unavailable for {args.slug} v{args.version}; "
+                            f"BibTeX is unavailable for {args.slug} v{citations.version}; "
                             f"see {citations.project.url}"
                         )
                     print("\n\n".join(
@@ -202,7 +202,7 @@ def _handle_discovery(args):
                 elif args.json:
                     print(json.dumps(asdict(citations)))
                 else:
-                    print(f"Project citation ({args.slug} v{args.version}):")
+                    print(f"Project citation ({args.slug} v{citations.version}):")
                     print(citations.project.text)
                     print("\nStandard PhysioNet citations:")
                     for number, citation in enumerate(citations.physionet, start=1):

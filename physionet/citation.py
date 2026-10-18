@@ -21,6 +21,7 @@ class CitationBundle:
 
     project: Citation
     physionet: Tuple[Citation, ...]
+    version: str
 
 
 # PhysioNet asks users to cite both papers at https://physionet.org/about/.

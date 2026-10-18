@@ -104,12 +104,24 @@ class ProjectsAPI:
 
         return ProjectDetail.from_dict(data)
 
-    def get_citations(self, project_slug: str, version: str, include_bibtex: bool = False) -> CitationBundle:
-        """Return the version's citation and both standard PhysioNet citations.
+    def get_citations(self, project_slug: str, version: Optional[str] = None, include_bibtex: bool = False) -> CitationBundle:
+        """Return the project's citation and both standard PhysioNet citations.
 
         The API supplies the project citation. BibTeX is read from the published
         project page because the API does not currently include that format.
+        When version is omitted, use the version marked latest by PhysioNet.
         """
+        if version is None:
+            latest = [
+                item for item in self.list_published()
+                if item.slug == project_slug and item.is_latest_version
+            ]
+            if not latest:
+                raise NotFoundError(f"No latest published version found for project '{project_slug}'")
+            if len(latest) > 1:
+                raise PhysioNetAPIError(f"Multiple latest versions found for project '{project_slug}'")
+            version = latest[0].version
+
         project_version = next(
             (item for item in self.list_versions(project_slug) if item.version == version), None
         )
@@ -142,6 +154,7 @@ class ProjectsAPI:
                 url=details.source_url or page_url,
             ),
             physionet=STANDARD_PHYSIONET_CITATIONS,
+            version=version,
         )
 
     def download_checksums(self, project_slug: str, version: str, output_path: str):
