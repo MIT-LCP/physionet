@@ -2,6 +2,7 @@
 
 import hashlib
 import sys
+from importlib import import_module
 from unittest.mock import patch
 
 import requests_mock
@@ -9,6 +10,7 @@ import requests_mock
 from physionet.cli import main
 
 
+download_module = import_module("physionet.download")
 VERSIONS = [{"slug": "demo", "title": "Demo", "version": "1.0", "abstract": "", "citation": ""}]
 
 
@@ -51,7 +53,7 @@ def test_cli_exits_130_on_interrupt(tmp_path, capsys):
     with requests_mock.Mocker() as mock:
         mock.get("https://physionet.org/api/v1/projects/demo/versions/", json=VERSIONS)
         mock.get("https://physionet.org/files/demo/1.0/SHA256SUMS.txt", text=manifest)
-        with patch("physionet.download._download_file", side_effect=interrupt_file):
+        with patch.object(download_module, "_download_file", side_effect=interrupt_file):
             with patch.object(
                 sys,
                 "argv",
