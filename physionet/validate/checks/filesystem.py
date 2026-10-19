@@ -5,6 +5,7 @@ from pathlib import Path
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
+from physionet.validate.checks.empatica import is_e4_tags_file
 
 # Proprietary file formats and their recommended open alternatives
 PROPRIETARY_FORMATS = {
@@ -93,6 +94,16 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
             try:
                 size = file_path.stat().st_size
                 if size == 0:
+                    if is_e4_tags_file(file_path):
+                        result.issues.append(
+                            ValidationIssue(
+                                severity=Severity.INFO,
+                                category=CheckCategory.FILESYSTEM,
+                                file=str(file_path.relative_to(path)),
+                                message="No Empatica E4 event markers recorded (empty tags.csv)",
+                            )
+                        )
+                        continue
                     result.issues.append(
                         ValidationIssue(
                             severity=Severity.WARNING,

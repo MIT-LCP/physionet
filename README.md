@@ -142,6 +142,14 @@ dataset directory.
 - **privacy** - PHI patterns (SSN, email, phone numbers), date patterns, and
   sensitive file detection.
 
+The validator recognizes the headerless CSV layout exported by Empatica E4
+Connect for ACC, BVP, EDA, and TEMP signals. In a matching E4 session, an empty
+`tags.csv` means no event markers and is reported as information; Unix event
+timestamps are not labeled as phone numbers. Other empty files and genuine
+phone-number patterns still receive warnings. This format check does not
+establish that timestamps have been de-identified; review them before sharing.
+See [Empatica's E4 data format](https://www.empatica.com/blog/decoding-wearable-sensor-signals-what-to-expect-from-your-e4-data/).
+
 **Examples:**
 
 ```bash

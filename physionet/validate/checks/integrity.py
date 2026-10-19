@@ -6,6 +6,7 @@ from typing import Optional, Callable
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
+from physionet.validate.checks.empatica import is_e4_sensor_file, is_e4_tags_file
 
 
 def check_integrity(path: Path, config: ValidationConfig, progress_callback: Optional[Callable[[str], None]] = None) -> CheckResult:
@@ -43,6 +44,8 @@ def check_integrity(path: Path, config: ValidationConfig, progress_callback: Opt
 
 def _validate_csv_structure(csv_file: Path, base_path: Path, result: CheckResult) -> None:
     """Validate CSV file structure."""
+    e4_sensor = is_e4_sensor_file(csv_file)
+    e4_tags = is_e4_tags_file(csv_file)
     try:
         with open(csv_file, "r", encoding="utf-8") as f:
             # Try to detect dialect
@@ -50,7 +53,7 @@ def _validate_csv_structure(csv_file: Path, base_path: Path, result: CheckResult
             f.seek(0)
 
             try:
-                dialect = csv.Sniffer().sniff(sample)
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
             except csv.Error:
                 # Use default dialect if detection fails
                 dialect = csv.excel
@@ -61,6 +64,8 @@ def _validate_csv_structure(csv_file: Path, base_path: Path, result: CheckResult
             try:
                 header = next(reader)
             except StopIteration:
+                if e4_tags:
+                    return  # No event markers is a valid E4 tags file.
                 result.issues.append(
                     ValidationIssue(
                         severity=Severity.ERROR,
@@ -83,7 +88,7 @@ def _validate_csv_structure(csv_file: Path, base_path: Path, result: CheckResult
                 return
 
             # Check for duplicate column names
-            if len(header) != len(set(header)):
+            if not (e4_sensor or e4_tags) and len(header) != len(set(header)):
                 duplicates = [col for col in header if header.count(col) > 1]
                 result.issues.append(
                     ValidationIssue(
@@ -95,7 +100,7 @@ def _validate_csv_structure(csv_file: Path, base_path: Path, result: CheckResult
                 )
 
             # Check for empty column names
-            if any(not col.strip() for col in header):
+            if not (e4_sensor or e4_tags) and any(not col.strip() for col in header):
                 result.issues.append(
                     ValidationIssue(
                         severity=Severity.ERROR,
@@ -105,10 +110,15 @@ def _validate_csv_structure(csv_file: Path, base_path: Path, result: CheckResult
                     )
                 )
 
+            # E4 event tags have no header: validate the first row as data too.
+            if e4_tags:
+                f.seek(0)
+                reader = csv.reader(f, dialect)
+
             # Validate row consistency
-            expected_cols = len(header)
+            expected_cols = 1 if e4_tags else len(header)
             row_count = 0
-            for line_num, row in enumerate(reader, start=2):  # Start at 2 (after header)
+            for line_num, row in enumerate(reader, start=1 if e4_tags else 2):
                 row_count += 1
                 if len(row) != expected_cols:
                     result.issues.append(
@@ -132,7 +142,7 @@ def _validate_csv_structure(csv_file: Path, base_path: Path, result: CheckResult
                         )
                         break
 
-            if row_count == 0:
+            if row_count == 0 and not e4_tags:
                 result.issues.append(
                     ValidationIssue(
                         severity=Severity.WARNING,

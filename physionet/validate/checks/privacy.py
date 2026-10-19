@@ -8,6 +8,7 @@ from typing import Optional, Callable
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
+from physionet.validate.checks.empatica import is_e4_tags_file, is_unix_timestamp
 
 # Pattern names for better error messages
 PHI_PATTERN_NAMES = {
@@ -175,10 +176,11 @@ def _check_csv_privacy(
     # Maps column name to the pattern name that matched
     phi_columns = {}  # {column: pattern_name}
     age_columns = set()  # Columns with age violations
+    e4_tags = is_e4_tags_file(csv_file)
 
     try:
         with open(csv_file, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
+            reader = csv.DictReader(f, fieldnames=["event_time"] if e4_tags else None)
 
             # Determine if we should sample this file
             rows_scanned = 0
@@ -221,6 +223,8 @@ def _check_csv_privacy(
                     # Check for PHI patterns (only track if not already found in this column)
                     if col not in phi_columns:
                         for pattern, pattern_name in pattern_info:
+                            if e4_tags and pattern_name == "phone number" and is_unix_timestamp(value_str):
+                                continue
                             if pattern.search(value_str):
                                 phi_columns[col] = pattern_name
                                 break
