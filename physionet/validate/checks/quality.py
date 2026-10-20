@@ -1,11 +1,11 @@
 """Data quality validation checks."""
 
-import csv
 from pathlib import Path
 from typing import Optional, Callable
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
+from physionet.validate.checks.csv_formats import find_files_by_suffix, get_csv_layout
 
 
 def check_quality(path: Path, config: ValidationConfig, progress_callback: Optional[Callable[[str], None]] = None) -> CheckResult:
@@ -28,7 +28,7 @@ def check_quality(path: Path, config: ValidationConfig, progress_callback: Optio
     result = CheckResult(category=CheckCategory.QUALITY)
 
     # Find and validate CSV files
-    csv_files = list(path.rglob("*.csv"))
+    csv_files = find_files_by_suffix(path, ".csv")
     for i, csv_file in enumerate(csv_files):
         if progress_callback:
             progress_callback(f"Checking {csv_file.name} ({i+1}/{len(csv_files)} CSV files)")
@@ -44,11 +44,13 @@ def check_quality(path: Path, config: ValidationConfig, progress_callback: Optio
 def _check_csv_quality(csv_file: Path, base_path: Path, config: ValidationConfig, result: CheckResult) -> None:
     """Check quality metrics for a CSV file."""
     try:
+        layout = get_csv_layout(csv_file)
         with open(csv_file, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
+            reader = layout.dict_reader(f)
+            columns = reader.fieldnames or []
 
             # Track column statistics
-            column_stats = {col: {"total": 0, "missing": 0, "values": []} for col in reader.fieldnames or []}
+            column_stats = {col: {"total": 0, "missing": 0, "values": []} for col in columns}
 
             # Determine if we should sample this file
             rows_scanned = 0
@@ -78,6 +80,8 @@ def _check_csv_quality(csv_file: Path, base_path: Path, config: ValidationConfig
                 rows_scanned += 1
 
                 for col, value in row.items():
+                    if col not in column_stats:
+                        continue  # Integrity reports surplus fields in malformed rows.
                     column_stats[col]["total"] += 1
 
                     # Check for missing values

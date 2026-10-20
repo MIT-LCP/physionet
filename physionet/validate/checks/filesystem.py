@@ -5,6 +5,7 @@ from pathlib import Path
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
+from physionet.validate.checks.csv_formats import get_csv_layout
 
 # Proprietary file formats and their recommended open alternatives
 PROPRIETARY_FORMATS = {
@@ -93,6 +94,17 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
             try:
                 size = file_path.stat().st_size
                 if size == 0:
+                    layout = get_csv_layout(file_path)
+                    if layout.allow_empty:
+                        result.issues.append(
+                            ValidationIssue(
+                                severity=Severity.INFO,
+                                category=CheckCategory.FILESYSTEM,
+                                file=str(file_path.relative_to(path)),
+                                message=layout.empty_message or "Empty file is valid for this CSV layout",
+                            )
+                        )
+                        continue
                     result.issues.append(
                         ValidationIssue(
                             severity=Severity.WARNING,

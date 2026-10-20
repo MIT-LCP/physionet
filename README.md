@@ -142,6 +142,10 @@ dataset directory.
 - **privacy** - PHI patterns (SSN, email, phone numbers), date patterns, and
   sensitive file detection.
 
+CSV exports from the Empatica E4 wearable are recognized, so their headerless
+layout, empty `tags.csv` files, and Unix timestamps don't produce false errors
+or privacy warnings. This doesn't check that timestamps are de-identified.
+
 **Examples:**
 
 ```bash

@@ -1,6 +1,5 @@
 """Privacy and PHI validation checks."""
 
-import csv
 import os
 import re
 from pathlib import Path
@@ -8,6 +7,8 @@ from typing import Optional, Callable
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
+from physionet.validate.checks.csv_formats import find_files_by_suffix, get_csv_layout
+from physionet.validate.checks.csv_layout import is_unix_timestamp
 
 # Pattern names for better error messages
 PHI_PATTERN_NAMES = {
@@ -79,7 +80,7 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
                     for pattern in config.phi_patterns]
 
     # Check CSV files
-    csv_files = list(path.rglob("*.csv"))
+    csv_files = find_files_by_suffix(path, ".csv")
     for i, csv_file in enumerate(csv_files):
         if progress_callback:
             progress_callback(f"Checking {csv_file.name} ({i+1}/{len(csv_files)} CSV files)")
@@ -90,7 +91,7 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
         _check_csv_privacy(csv_file, path, config, pattern_info, result)
 
     # Check text files for PHI
-    text_files = list(path.rglob("*.txt"))
+    text_files = find_files_by_suffix(path, ".txt")
     for i, text_file in enumerate(text_files):
         if progress_callback:
             progress_callback(f"Checking {text_file.name} ({i+1}/{len(text_files)} text files)")
@@ -171,14 +172,14 @@ def _check_csv_privacy(
     """Check a CSV file for privacy issues."""
     relative_path = str(csv_file.relative_to(base_path))
 
-    # Track which columns have which types of issues (to report only once per column)
-    # Maps column name to the pattern name that matched
-    phi_columns = {}  # {column: pattern_name}
+    # Report each pattern at most once per column, including malformed extra fields.
+    phi_columns = {}  # {column: set of pattern names}
     age_columns = set()  # Columns with age violations
+    layout = get_csv_layout(csv_file)
 
     try:
         with open(csv_file, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
+            reader = layout.dict_reader(f)
 
             # Determine if we should sample this file
             rows_scanned = 0
@@ -206,46 +207,52 @@ def _check_csv_privacy(
                 rows_to_scan = reader
                 is_sampled = False
 
-            for line_num, row in enumerate(rows_to_scan, start=2):  # Start at 2 (after header)
+            for row in rows_to_scan:
                 # Stop if we've hit the limit (when not sampling)
                 if max_rows and not is_sampled and rows_scanned >= max_rows:
                     break
                 rows_scanned += 1
 
-                for col, value in row.items():
-                    if not value:
-                        continue
+                for raw_col, raw_value in row.items():
+                    # DictReader stores surplus CSV fields under a None key.
+                    col = raw_col if raw_col is not None else "extra field"
+                    values = raw_value if isinstance(raw_value, list) else [raw_value]
+                    for value in values:
+                        if not value:
+                            continue
 
-                    value_str = str(value).strip()
+                        value_str = str(value).strip()
 
-                    # Check for PHI patterns (only track if not already found in this column)
-                    if col not in phi_columns:
                         for pattern, pattern_name in pattern_info:
+                            if (pattern_name == "phone number"
+                                    and raw_col in layout.unix_timestamp_columns
+                                    and is_unix_timestamp(value_str)):
+                                continue
                             if pattern.search(value_str):
-                                phi_columns[col] = pattern_name
-                                break
+                                phi_columns.setdefault(col, set()).add(pattern_name)
 
-                    # Check for age violations (only track if not already found in this column)
-                    if col not in age_columns and "age" in col.lower():
-                        try:
-                            age_value = float(value_str)
-                            if age_value > config.allowed_age_max:
-                                age_columns.add(col)
-                        except ValueError:
-                            pass
+                        # Check for age violations (only track if not already found in this column)
+                        if col not in age_columns and "age" in col.lower():
+                            try:
+                                age_value = float(value_str)
+                                if age_value > config.allowed_age_max:
+                                    age_columns.add(col)
+                            except ValueError:
+                                pass
 
         # Report one issue per column type with specific pattern info
-        for col, pattern_name in phi_columns.items():
-            result.issues.append(
-                ValidationIssue(
-                    severity=Severity.WARNING,
-                    category=CheckCategory.PRIVACY,
-                    file=relative_path,
-                    column=col,
-                    message=f"Potential private information detected in column '{col}' (pattern: {pattern_name})",
-                    suggestion="Review and remove or de-identify sensitive information",
+        for col, pattern_names in phi_columns.items():
+            for pattern_name in sorted(pattern_names):
+                result.issues.append(
+                    ValidationIssue(
+                        severity=Severity.WARNING,
+                        category=CheckCategory.PRIVACY,
+                        file=relative_path,
+                        column=col,
+                        message=f"Potential private information detected in column '{col}' (pattern: {pattern_name})",
+                        suggestion="Review and remove or de-identify sensitive information",
+                    )
                 )
-            )
 
         for col in age_columns:
             result.issues.append(
