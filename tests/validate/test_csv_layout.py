@@ -19,7 +19,7 @@ def test_custom_headerless_layout_is_used_by_all_csv_checks(tmp_path, monkeypatc
             return CsvLayout(
                 columns=("event_time", "signal"),
                 metadata_rows=1,
-                ignore_unix_timestamps_as_phone_numbers=True,
+                unix_timestamp_columns=("event_time",),
             )
         return None
 

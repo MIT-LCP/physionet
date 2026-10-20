@@ -72,17 +72,14 @@ def is_e4_ibi_file(file_path: Path) -> bool:
 
 
 def is_e4_tags_file(file_path: Path) -> bool:
-    """Identify event tags only when a neighboring E4 sensor confirms the format."""
+    """Identify event tags only when a neighboring E4 sensor or IBI file confirms the format."""
     if file_path.name.lower() != "tags.csv":
         return False
     try:
         siblings = list(file_path.parent.iterdir())
     except OSError:
         return False
-    return any(
-        sibling.name.lower() in _SENSOR_LAYOUTS and is_e4_sensor_file(sibling)
-        for sibling in siblings
-    )
+    return any(is_e4_sensor_file(sibling) or is_e4_ibi_file(sibling) for sibling in siblings)
 
 
 def get_e4_csv_layout(file_path: Path) -> Optional[CsvLayout]:
@@ -101,6 +98,6 @@ def get_e4_csv_layout(file_path: Path) -> Optional[CsvLayout]:
             columns=("event_time",),
             allow_empty=True,
             empty_message="No Empatica E4 event markers recorded (empty tags.csv)",
-            ignore_unix_timestamps_as_phone_numbers=True,
+            unix_timestamp_columns=("event_time",),
         )
     return None

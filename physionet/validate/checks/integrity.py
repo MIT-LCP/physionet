@@ -6,7 +6,7 @@ from typing import Optional, Callable
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
-from physionet.validate.checks.csv_formats import get_csv_layout
+from physionet.validate.checks.csv_formats import find_files_by_suffix, get_csv_layout
 
 
 def check_integrity(path: Path, config: ValidationConfig, progress_callback: Optional[Callable[[str], None]] = None) -> CheckResult:
@@ -29,7 +29,7 @@ def check_integrity(path: Path, config: ValidationConfig, progress_callback: Opt
     result = CheckResult(category=CheckCategory.INTEGRITY)
 
     # Find and validate CSV files
-    csv_files = list(path.rglob("*.csv"))
+    csv_files = find_files_by_suffix(path, ".csv")
     for i, csv_file in enumerate(csv_files):
         if progress_callback:
             progress_callback(f"Checking {csv_file.name} ({i+1}/{len(csv_files)} CSV files)")

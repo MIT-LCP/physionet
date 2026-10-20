@@ -20,7 +20,8 @@ class CsvLayout:
     allow_empty: bool = False
     empty_message: Optional[str] = None
     no_data_message: Optional[str] = None
-    ignore_unix_timestamps_as_phone_numbers: bool = False
+    # Columns whose Unix timestamps are not reported as phone numbers.
+    unix_timestamp_columns: Tuple[str, ...] = ()
 
     def dict_reader(self, stream: TextIO) -> csv.DictReader:
         """Read data rows under the layout's column names."""

@@ -367,3 +367,51 @@ def test_lowercase_e4_file_names_are_recognized(tmp_path):
     assert result.total_errors == 0
     assert result.total_warnings == 0
     assert result.total_info == 1
+
+
+def test_upper_case_csv_and_txt_extensions_are_validated(tmp_path):
+    (tmp_path / "EDA.CSV").write_text("1673588411\n4\n0.123456\n0.234567,0.1\n")
+    (tmp_path / "TAGS.CSV").write_text("1673588411\n555-123-4567\n")
+    (tmp_path / "contacts.Csv").write_text("contact\nperson@example.com\n")
+    (tmp_path / "NOTES.TXT").write_text("Call 555-987-6543\n")
+
+    integrity = check_integrity(tmp_path, ValidationConfig())
+    privacy = check_privacy(tmp_path, ValidationConfig())
+
+    assert any(issue.file == "EDA.CSV" and "expected 1" in issue.message
+               for issue in integrity.issues)
+    assert {issue.file for issue in privacy.issues} >= {"TAGS.CSV", "contacts.Csv", "NOTES.TXT"}
+    assert any(issue.file == "TAGS.CSV" and "phone number" in issue.message
+               for issue in privacy.issues)
+
+
+def test_upper_case_csv_extension_is_quality_checked(tmp_path):
+    (tmp_path / "TEMP.CSV").write_text("1673588411\n4\n31.5\n99.0\n")
+
+    result = check_quality(tmp_path, ValidationConfig(value_ranges={"temp": (30, 40)}))
+
+    assert any(issue.file == "TEMP.CSV" and issue.column == "temp" for issue in result.issues)
+
+
+def test_phone_number_in_e4_tags_extra_field_is_reported(tmp_path):
+    write_e4_sensor(tmp_path)
+    (tmp_path / "tags.csv").write_text("1673588411,2125551234\n")
+
+    result = check_privacy(tmp_path, ValidationConfig())
+
+    assert [(issue.column, "phone number" in issue.message) for issue in result.issues] == [
+        ("extra field", True)
+    ]
+
+
+def test_ibi_file_confirms_empty_e4_tags(tmp_path):
+    (tmp_path / "IBI.csv").write_text("1673588411.000000, IBI\n12.343750,0.828125\n")
+    (tmp_path / "tags.csv").write_text("")
+
+    result = validate_dataset(
+        str(tmp_path), ValidationConfig(check_documentation=False), show_progress=False
+    )
+
+    assert result.total_errors == 0
+    assert result.total_warnings == 0
+    assert result.total_info == 1

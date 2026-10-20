@@ -7,7 +7,7 @@ from typing import Optional, Callable
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
-from physionet.validate.checks.csv_formats import get_csv_layout
+from physionet.validate.checks.csv_formats import find_files_by_suffix, get_csv_layout
 from physionet.validate.checks.csv_layout import is_unix_timestamp
 
 # Pattern names for better error messages
@@ -80,7 +80,7 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
                     for pattern in config.phi_patterns]
 
     # Check CSV files
-    csv_files = list(path.rglob("*.csv"))
+    csv_files = find_files_by_suffix(path, ".csv")
     for i, csv_file in enumerate(csv_files):
         if progress_callback:
             progress_callback(f"Checking {csv_file.name} ({i+1}/{len(csv_files)} CSV files)")
@@ -91,7 +91,7 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
         _check_csv_privacy(csv_file, path, config, pattern_info, result)
 
     # Check text files for PHI
-    text_files = list(path.rglob("*.txt"))
+    text_files = find_files_by_suffix(path, ".txt")
     for i, text_file in enumerate(text_files):
         if progress_callback:
             progress_callback(f"Checking {text_file.name} ({i+1}/{len(text_files)} text files)")
@@ -225,7 +225,7 @@ def _check_csv_privacy(
 
                         for pattern, pattern_name in pattern_info:
                             if (pattern_name == "phone number"
-                                    and layout.ignore_unix_timestamps_as_phone_numbers
+                                    and raw_col in layout.unix_timestamp_columns
                                     and is_unix_timestamp(value_str)):
                                 continue
                             if pattern.search(value_str):
