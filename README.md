@@ -139,12 +139,20 @@ dataset directory.
 - **documentation** - Missing or incomplete documentation (e.g. `README.md`).
 - **integrity** - CSV structure, encoding, and duplicate column detection.
 - **quality** - Missing values, outliers, and data type consistency.
-- **privacy** - PHI patterns (SSN, email, phone numbers), date patterns, and
-  sensitive file detection.
+- **privacy** - PHI patterns (SSN, email, phone numbers), ages above 89,
+  dates that may be real, and sensitive file detection.
+
+Dates from the last 200 years up to today are reported as possibly real, since
+de-identified datasets usually shift dates (often into the future). This covers
+written dates in CSV and text files, and Unix timestamps in columns with
+time-like names such as `charttime` or `timestamp`. Dates shifted into that
+window still need to be confirmed by the submitter. Set
+`ValidationConfig(date_lookback_years=...)` to change the window, or `None` to
+turn the check off.
 
 CSV exports from the Empatica E4 wearable are recognized, so their headerless
 layout, empty `tags.csv` files, and Unix timestamps don't produce false errors
-or privacy warnings. This doesn't check that timestamps are de-identified.
+or phone-number warnings. Their timestamps are checked as dates.
 
 **Examples:**
 

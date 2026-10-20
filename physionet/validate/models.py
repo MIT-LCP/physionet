@@ -186,10 +186,13 @@ class ValidationResult:
 
             for issue in result.issues:
                 icon = "✗" if issue.severity == Severity.ERROR else "⚠"
-                location = f" {issue.file}"
-                if issue.line:
-                    location += f":{issue.line}"
-                lines.append(f"  {icon}{location} - {issue.message}")
+                if issue.file:
+                    location = f" {issue.file}"
+                    if issue.line:
+                        location += f":{issue.line}"
+                    lines.append(f"  {icon}{location} - {issue.message}")
+                else:
+                    lines.append(f"  {icon} {issue.message}")
 
         lines.append("")
 

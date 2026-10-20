@@ -1,14 +1,21 @@
 """Privacy and PHI validation checks."""
 
+import csv
 import os
 import re
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Callable, Dict, List, Optional, Tuple
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
 from physionet.validate.checks.csv_formats import find_files_by_suffix, get_csv_layout
 from physionet.validate.checks.csv_layout import is_unix_timestamp
+from physionet.validate.checks.dates import (
+    DateRange, RealisticDateFinder, dates_in_text, is_time_like_column,
+)
+
+# Report realistic dates for at most this many files, then summarize the rest.
+MAX_DATE_WARNING_FILES = 10
 
 # Pattern names for better error messages
 PHI_PATTERN_NAMES = {
@@ -58,7 +65,7 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
     - PHI pattern detection
     - Age de-identification
     - Sensitive configuration files (keys, credentials)
-    - Date patterns
+    - Dates within config.date_lookback_years of today, which may be real
 
     Args:
         path: Path to dataset directory
@@ -79,6 +86,11 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
     pattern_info = [(re.compile(pattern), PHI_PATTERN_NAMES.get(pattern, "unknown pattern"))
                     for pattern in config.phi_patterns]
 
+    date_finder = (
+        RealisticDateFinder(config.date_lookback_years) if config.date_lookback_years else None
+    )
+    date_findings: List[Tuple[str, Dict[Optional[str], DateRange]]] = []
+
     # Check CSV files
     csv_files = find_files_by_suffix(path, ".csv")
     for i, csv_file in enumerate(csv_files):
@@ -88,7 +100,7 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
         if any(p in str(csv_file) for p in config.ignore_patterns):
             continue
 
-        _check_csv_privacy(csv_file, path, config, pattern_info, result)
+        _check_csv_privacy(csv_file, path, config, pattern_info, result, date_finder, date_findings)
 
     # Check text files for PHI
     text_files = find_files_by_suffix(path, ".txt")
@@ -99,9 +111,55 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
         if any(p in str(text_file) for p in config.ignore_patterns):
             continue
 
-        _check_text_file_privacy(text_file, path, pattern_info, result, config)
+        _check_text_file_privacy(
+            text_file, path, pattern_info, result, config, date_finder, date_findings
+        )
+
+    if date_finder:
+        _report_realistic_dates(date_findings, config.date_lookback_years, result)
 
     return result
+
+
+def _report_realistic_dates(
+    findings: List[Tuple[str, Dict[Optional[str], DateRange]]],
+    lookback_years: int,
+    result: CheckResult,
+) -> None:
+    """Warn about files holding dates that may be real, one warning per file."""
+    for relative_path, ranges in findings[:MAX_DATE_WARNING_FILES]:
+        places = []
+        for column, date_range in ranges.items():
+            where = f"column '{column}': " if column is not None else ""
+            places.append(f"{where}{date_range.describe()}")
+        columns = [column for column in ranges if column is not None]
+        result.issues.append(
+            ValidationIssue(
+                severity=Severity.WARNING,
+                category=CheckCategory.PRIVACY,
+                file=relative_path,
+                column=columns[0] if len(columns) == 1 else None,
+                message=(
+                    f"Dates within the last {lookback_years} years may be real "
+                    f"({'; '.join(places)})"
+                ),
+                suggestion="Confirm these dates have been shifted or removed",
+            )
+        )
+    remaining = len(findings) - MAX_DATE_WARNING_FILES
+    if remaining > 0:
+        result.issues.append(
+            ValidationIssue(
+                severity=Severity.WARNING,
+                category=CheckCategory.PRIVACY,
+                message=(
+                    f"Dates within the last {lookback_years} years also found in "
+                    f"{remaining} more file{'s' if remaining != 1 else ''} "
+                    f"(showing first {MAX_DATE_WARNING_FILES})"
+                ),
+                suggestion="Confirm these dates have been shifted or removed",
+            )
+        )
 
 
 def _check_sensitive_files(path: Path, config: ValidationConfig, result: CheckResult) -> None:
@@ -167,10 +225,13 @@ def _check_csv_privacy(
     base_path: Path,
     config: ValidationConfig,
     pattern_info: list,
-    result: CheckResult
+    result: CheckResult,
+    date_finder: Optional[RealisticDateFinder] = None,
+    date_findings: Optional[list] = None,
 ) -> None:
     """Check a CSV file for privacy issues."""
     relative_path = str(csv_file.relative_to(base_path))
+    date_ranges: Dict[Optional[str], DateRange] = {}
 
     # Report each pattern at most once per column, including malformed extra fields.
     phi_columns = {}  # {column: set of pattern names}
@@ -178,6 +239,15 @@ def _check_csv_privacy(
     layout = get_csv_layout(csv_file)
 
     try:
+        if date_finder and layout.columns is not None and layout.metadata_rows:
+            # Headerless layouts may keep start times in rows before the data.
+            with open(csv_file, "r", encoding="utf-8", newline="") as f:
+                for index, row in zip(range(layout.metadata_rows), csv.reader(f)):
+                    names = layout.metadata_row_names
+                    label = names[index] if index < len(names) else f"metadata row {index + 1}"
+                    for value in row:
+                        date_finder.scan(value, True, date_ranges, label)
+
         with open(csv_file, "r", encoding="utf-8") as f:
             reader = layout.dict_reader(f)
 
@@ -223,6 +293,13 @@ def _check_csv_privacy(
 
                         value_str = str(value).strip()
 
+                        if date_finder:
+                            unix_allowed = raw_col is not None and (
+                                raw_col in layout.unix_timestamp_columns
+                                or is_time_like_column(raw_col)
+                            )
+                            date_finder.scan(value_str, unix_allowed, date_ranges, col)
+
                         for pattern, pattern_name in pattern_info:
                             if (pattern_name == "phone number"
                                     and raw_col in layout.unix_timestamp_columns
@@ -266,6 +343,9 @@ def _check_csv_privacy(
                 )
             )
 
+        if date_ranges and date_findings is not None:
+            date_findings.append((relative_path, date_ranges))
+
     except Exception as e:
         result.issues.append(
             ValidationIssue(
@@ -277,10 +357,19 @@ def _check_csv_privacy(
         )
 
 
-def _check_text_file_privacy(text_file: Path, base_path: Path, pattern_info: list, result: CheckResult, config: ValidationConfig) -> None:
+def _check_text_file_privacy(
+    text_file: Path,
+    base_path: Path,
+    pattern_info: list,
+    result: CheckResult,
+    config: ValidationConfig,
+    date_finder: Optional[RealisticDateFinder] = None,
+    date_findings: Optional[list] = None,
+) -> None:
     """Check a text file for privacy issues."""
     relative_path = str(text_file.relative_to(base_path))
     detected_patterns = set()
+    date_ranges: Dict[Optional[str], DateRange] = {}
 
     try:
         with open(text_file, "r", encoding="utf-8") as f:
@@ -291,6 +380,12 @@ def _check_text_file_privacy(text_file: Path, base_path: Path, pattern_info: lis
                 for pattern, pattern_name in pattern_info:
                     if pattern.search(line):
                         detected_patterns.add(pattern_name)
+                if date_finder:
+                    # Free text has no column names, so Unix timestamps are not inferred.
+                    date_finder.scan(line, False, date_ranges, None)
+
+        if date_ranges and date_findings is not None:
+            date_findings.append((relative_path, date_ranges))
 
         # Report once per file with specific patterns found
         if detected_patterns:

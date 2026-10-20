@@ -17,6 +17,8 @@ class CsvLayout:
 
     columns: Optional[Tuple[str, ...]] = None
     metadata_rows: int = 0
+    # Optional names for the metadata rows, used in messages.
+    metadata_row_names: Tuple[str, ...] = ()
     allow_empty: bool = False
     empty_message: Optional[str] = None
     no_data_message: Optional[str] = None

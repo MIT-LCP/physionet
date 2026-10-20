@@ -10,8 +10,8 @@ from physionet.validate.models import Severity
 def test_custom_headerless_layout_is_used_by_all_csv_checks(tmp_path, monkeypatch):
     (tmp_path / "signals.csv").write_text(
         "device export\n"
-        "1673588411,0.1\n"
-        "1673588422,\n"
+        "5680288411,0.1\n"
+        "5680288422,\n"
     )
 
     def detect(path):

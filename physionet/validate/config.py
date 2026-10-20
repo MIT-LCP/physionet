@@ -37,6 +37,9 @@ class ValidationConfig:
 
     # Privacy settings
     allowed_age_max: int = 89
+    # Warn about dates from this many years ago up to today, which may be real
+    # rather than shifted. None turns the date check off.
+    date_lookback_years: Optional[int] = 200
     phi_patterns: List[str] = field(default_factory=lambda: [
         r"\b\d{3}-\d{2}-\d{4}\b",  # SSN pattern
         r"\b[\w\.-]+@[\w\.-]+\.\w+\b",  # Email pattern
