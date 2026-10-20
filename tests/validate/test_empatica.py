@@ -1,8 +1,19 @@
 """Regression tests for Empatica E4 exports and ordinary CSV safeguards."""
 
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
 from physionet.validate import ValidationConfig, validate_dataset
 from physionet.validate.checks import check_filesystem, check_integrity, check_privacy, check_quality
+from physionet.validate.checks.empatica import is_e4_sensor_file
 from physionet.validate.models import Severity
+
+
+E4_EXAMPLE = Path(__file__).parent.parent / "fixtures" / "e4_session"
 
 
 def write_e4_sensor(directory):
@@ -95,14 +106,15 @@ def test_non_timestamp_phone_in_e4_tags_still_warns(tmp_path):
                for issue in result.issues)
 
 
-def test_e4_acc_quality_checks_each_data_channel(tmp_path):
+@pytest.mark.parametrize("sample_large_files", [True, False])
+def test_e4_acc_quality_checks_each_data_channel(tmp_path, sample_large_files):
     (tmp_path / "ACC.csv").write_text(
         "1673588411,1673588411,1673588411\n"
         "32,32,32\n"
         ",,50\n,,51\n"
     )
 
-    quality = check_quality(tmp_path, ValidationConfig())
+    quality = check_quality(tmp_path, ValidationConfig(sample_large_files=sample_large_files))
     result = validate_dataset(
         str(tmp_path), ValidationConfig(check_documentation=False), show_progress=False
     )
@@ -121,20 +133,59 @@ def test_e4_quality_range_excludes_timestamp_and_sample_rate(tmp_path):
     assert result.issues[0].value == "1.5"
 
 
-def test_malformed_e4_tags_extra_fields_are_scanned_for_phi(tmp_path):
+@pytest.mark.parametrize(
+    ("filename", "column", "valid_range"),
+    [("BVP.csv", "bvp", (0, 1)), ("TEMP.csv", "temp", (30, 40))],
+)
+def test_single_channel_e4_quality_ignores_metadata(filename, column, valid_range):
+    sensor = E4_EXAMPLE / filename
+
+    assert is_e4_sensor_file(sensor)
+    result = check_quality(E4_EXAMPLE, ValidationConfig(value_ranges={column: valid_range}))
+
+    assert not any(issue.file == filename for issue in result.issues)
+
+
+def test_generic_csv_named_like_e4_sensor_keeps_its_header(tmp_path):
+    (tmp_path / "EDA.csv").write_text("eda\n4\n15\n")
+
+    assert not is_e4_sensor_file(tmp_path / "EDA.csv")
+    result = check_quality(tmp_path, ValidationConfig(value_ranges={"eda": (0, 10)}))
+
+    assert len(result.issues) == 1
+    assert result.issues[0].column == "eda"
+    assert result.issues[0].value == "15.0"
+
+
+def test_empty_tags_without_valid_e4_neighbor_remains_an_error(tmp_path):
+    (tmp_path / "EDA.csv").write_text("1673588411\n5\n0.123456\n")
+    (tmp_path / "tags.csv").write_text("")
+
+    filesystem = check_filesystem(tmp_path, ValidationConfig())
+    integrity = check_integrity(tmp_path, ValidationConfig())
+
+    assert any(issue.file == "tags.csv" and issue.severity == Severity.WARNING
+               for issue in filesystem.issues)
+    assert any(issue.file == "tags.csv" and issue.severity == Severity.ERROR
+               for issue in integrity.issues)
+
+
+@pytest.mark.parametrize("sample_large_files", [True, False])
+def test_malformed_e4_tags_extra_fields_are_scanned_for_phi(tmp_path, sample_large_files):
     write_e4_sensor(tmp_path)
     (tmp_path / "tags.csv").write_text(
-        "1673588411.000000,person@example.com\n"
+        "1673588411.000000,person@example.com,555-123-4567\n"
         "1673588422.000000\n"
-        "1673588433.000000,555-123-4567\n"
+        "1673588433.000000,123-45-6789\n"
     )
 
-    result = check_privacy(tmp_path, ValidationConfig())
+    result = check_privacy(tmp_path, ValidationConfig(sample_large_files=sample_large_files))
 
     assert {issue.column for issue in result.issues} == {"extra field"}
-    assert len(result.issues) == 2
+    assert len(result.issues) == 3
     assert any("email address" in issue.message for issue in result.issues)
     assert any("phone number" in issue.message for issue in result.issues)
+    assert any("SSN" in issue.message for issue in result.issues)
     assert not any("Could not perform" in issue.message for issue in result.issues)
 
 
@@ -158,3 +209,30 @@ def test_complete_validation_accepts_e4_export_without_false_alerts(tmp_path):
     assert result.total_errors == 0
     assert result.total_warnings == 0
     assert result.total_info == 1
+
+
+def test_synthetic_e4_example_validates_through_python_and_cli(tmp_path):
+    config = ValidationConfig()
+    result = validate_dataset(str(E4_EXAMPLE), config, show_progress=False)
+
+    assert result.status == "pass"
+    assert result.total_errors == 0
+    assert result.total_warnings == 0
+    assert result.dataset_stats.file_count == 6
+    assert set(result.to_dict()["checks"]) == {
+        "filesystem", "documentation", "integrity", "quality", "privacy"
+    }
+
+    report = tmp_path / "report.json"
+    cli = subprocess.run(
+        [sys.executable, "-m", "physionet", "validate", str(E4_EXAMPLE), "--report", str(report)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert cli.returncode == 0, cli.stdout + cli.stderr
+    assert report.exists()
+    report_data = json.loads(report.read_text())
+    assert report_data["summary"]["status"] == "pass"
+    assert report_data["summary"]["total_errors"] == 0
+    assert report_data["summary"]["total_warnings"] == 0

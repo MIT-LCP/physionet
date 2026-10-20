@@ -151,6 +151,9 @@ phone-number patterns still receive warnings. Quality checks use `acc_x`,
 timestamp and sample-rate rows. This format check does not establish that
 timestamps have been de-identified; review them before sharing.
 See [Empatica's E4 data format](https://www.empatica.com/blog/decoding-wearable-sensor-signals-what-to-expect-from-your-e4-data/).
+A small [synthetic E4 session](tests/fixtures/e4_session) in the test fixtures
+shows the expected ACC, BVP, EDA, TEMP, and tags CSV layouts. Its values are
+invented and contain no participant data.
 
 **Examples:**
 
