@@ -317,7 +317,7 @@ def test_e4_hr_confirms_tags_without_other_sensors(tmp_path):
 
 def test_e4_ibi_file_uses_offset_and_interval_columns(tmp_path):
     (tmp_path / "IBI.csv").write_text(
-        "1673588411.000000, IBI\n12.343750,0.828125\n13.156250,0.812500\n"
+        "1673588411.000000, IBI\n12.343750,0.828125\n13.156250,0.812500\n15.656250,2.500000\n"
     )
 
     assert is_e4_ibi_file(tmp_path / "IBI.csv")
@@ -327,8 +327,11 @@ def test_e4_ibi_file_uses_offset_and_interval_columns(tmp_path):
         show_progress=False,
     )
 
+    # Only the 2.5 s interval is out of range; the start-time row is not data.
+    issues = [issue for check in result.check_results.values() for issue in check.issues]
+    assert [(issue.file, issue.column) for issue in issues] == [("IBI.csv", "ibi")]
+    assert "2.5" in issues[0].message
     assert result.total_errors == 0
-    assert result.total_warnings == 0
 
 
 def test_e4_ibi_with_no_beats_is_information_not_a_warning(tmp_path):
