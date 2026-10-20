@@ -222,10 +222,18 @@ and `PHYSIONET_PASSWORD` environment variables.
 already cached is read without contacting PhysioNet, so it works offline.
 Without one, the latest version is looked up online each time.
 
-**The cache** is at `~/.cache/physionet/<dataset>/<version>/`. Set
-`PHYSIONET_CACHE` (or pass `cache_dir=`) to use another folder, such as shared
-storage on a cluster. Files are only added after their SHA-256 checksum matches
-the dataset's `SHA256SUMS.txt`. Delete the folder to clear the cache.
+**The cache** is at `~/.cache/physionet/physionet.org/<dataset>/<version>/`.
+Set `PHYSIONET_CACHE` (or pass `cache_dir=`) to use another folder. Delete the
+folder to clear the cache.
+
+- Files are only added after their SHA-256 checksum matches the dataset's
+  `SHA256SUMS.txt`. Cached files are not checked again unless you pass
+  `verify=True`, which re-checks the file and downloads it again if it changed.
+- Files fetched with credentials are saved readable only by you. Anyone who can
+  read the cache folder can read any other file in it, so a cache shared on a
+  cluster suits open datasets. Keep restricted data in your own cache.
+- Symbolic links inside the cache folder are refused. Only use a cache folder
+  that people you don't trust cannot write to.
 
 ### Download
 

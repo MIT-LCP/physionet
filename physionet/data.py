@@ -1,22 +1,29 @@
 """Fetch PhysioNet files into a local cache and load tables from them.
 
-Files are stored at <cache>/<slug>/<version>/<path>. The cache folder is the
-cache_dir argument, or $PHYSIONET_CACHE, or $XDG_CACHE_HOME/physionet, or
-~/.cache/physionet.
+Files are stored at <cache>/<host>/<slug>/<version>/<path>, where <host> is
+the server they came from (physionet.org by default), so servers never share
+files. The cache folder is the cache_dir argument, or $PHYSIONET_CACHE, or
+$XDG_CACHE_HOME/physionet, or ~/.cache/physionet.
 
 A downloaded file is moved into the cache only after its SHA-256 checksum
-matches the project's SHA256SUMS.txt, so every cached file is complete and
-verified. Published versions never change, so each version's checksum list
-is cached as well. With an explicit version, a file that is already cached is
-returned without any network request. Without a version, the latest version
-is looked up online each time.
+matches the project's SHA256SUMS.txt. Cached files are not checked again
+unless verify=True is passed. Published versions never change, so each
+version's checksum list is cached as well. With an explicit version, a file
+that is already cached is returned without any network request. Without a
+version, the latest version is looked up online each time.
+
+Files fetched with credentials are saved readable by their owner only.
+Symbolic links below the cache folder are refused, so a link cannot redirect
+a download. The cache should only be writable by people you trust.
 """
 
 import os
 import re
+import stat
 import uuid
 from difflib import get_close_matches
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 from typing import Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -31,6 +38,7 @@ from physionet.download import (
     _get_file_manifest,
     _resolve_version,
     _select_source,
+    _verify_checksum,
 )
 
 __all__ = ["fetch", "load", "get_cache_dir"]
@@ -79,6 +87,7 @@ def fetch(
     password: Optional[str] = None,
     base_url: str = DEFAULT_BASE_URL,
     retries: int = 3,
+    verify: bool = False,
 ) -> Path:
     """
     Download one file from a PhysioNet project into the cache, if needed.
@@ -94,9 +103,12 @@ def fetch(
         password: PhysioNet password (or use PHYSIONET_PASSWORD env var)
         base_url: PhysioNet base URL
         retries: Number of retries for transient download errors
+        verify: Re-check the checksum of a file that is already cached, and
+            download it again if it does not match. Slow for large files.
 
     Returns:
-        Path to the verified file in the cache
+        Path to the file in the cache. Its checksum was checked when it was
+        downloaded, and again now if verify=True.
 
     Raises:
         FileNotFoundError: If the project version has no such file
@@ -105,7 +117,7 @@ def fetch(
     """
     with _Remote(base_url, username, password) as remote:
         path = _clean_path(path)
-        return _fetch(remote, slug, path, [path], version, cache_dir, source, retries)
+        return _fetch(remote, slug, path, [path], version, cache_dir, source, retries, verify)
 
 
 def load(
@@ -119,6 +131,7 @@ def load(
     password: Optional[str] = None,
     base_url: str = DEFAULT_BASE_URL,
     retries: int = 3,
+    verify: bool = False,
     **read_kwargs,
 ) -> pd.DataFrame:
     """
@@ -152,7 +165,7 @@ def load(
 
     with _Remote(base_url, username, password) as remote:
         file_path = _fetch(
-            remote, slug, table, candidates, version, cache_dir, source, retries, tables_only=True
+            remote, slug, table, candidates, version, cache_dir, source, retries, verify, tables_only=True
         )
     return _reader_for(file_path.name)(file_path, **read_kwargs)
 
@@ -169,6 +182,10 @@ class _Remote:
         self.username = username
         self.password = password
         self._client: Optional[PhysioNetClient] = None
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.username and self.password)
 
     @property
     def client(self) -> PhysioNetClient:
@@ -195,6 +212,7 @@ def _fetch(
     cache_dir: Optional[str],
     source: str,
     retries: int,
+    verify: bool,
     tables_only: bool = False,
 ) -> Path:
     """Return the cached file for the one candidate path the project has."""
@@ -204,7 +222,8 @@ def _fetch(
     _check_name(version, "version")
 
     cache = get_cache_dir(cache_dir)
-    manifest = _manifest(remote, cache, slug, version)
+    origin = _origin_folder(remote.base_url)
+    manifest = _manifest(remote, cache, origin, slug, version)
     name, expected_hash = _choose(manifest, requested, candidates, slug, version)
     if tables_only and _reader_for(name) is None:
         raise ValueError(
@@ -212,15 +231,18 @@ def _fetch(
             f"and read it yourself. Supported: {', '.join(ext for ext, _ in TABLE_READERS)}"
         )
 
-    target = cache / slug / version / PurePosixPath(name)
-    if target.is_file():
+    target = cache / origin / slug / version / PurePosixPath(name)
+    _refuse_symlinks(cache, target)
+    if target.is_file() and (not verify or _verify_checksum(target, expected_hash)):
         return target
 
     # Download into a uniquely named folder, so parallel jobs fetching the same
     # file never write to one file; whichever finishes last replaces an
     # identical copy. The file keeps its own name, which the progress bar shows.
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_symlinks(cache, target)
     staging = target.parent / f".download-{uuid.uuid4().hex}"
-    staging.mkdir(parents=True)
+    staging.mkdir(mode=0o700)
     partial = staging / target.name
     try:
         source_type, source_base = _select_source(
@@ -232,6 +254,9 @@ def _fetch(
             _download_file(
                 f"{source_base}/{name}", partial, expected_hash, remote.client.session, retries=retries
             )
+        if remote.has_credentials:
+            # Restricted data: only the owner may read it, even in a shared cache.
+            os.chmod(partial, stat.S_IRUSR | stat.S_IWUSR)
         os.replace(partial, target)
     finally:
         if partial.exists():
@@ -250,9 +275,10 @@ def _latest_version(remote: _Remote, slug: str) -> str:
         ) from exc
 
 
-def _manifest(remote: _Remote, cache: Path, slug: str, version: str) -> Dict[str, str]:
+def _manifest(remote: _Remote, cache: Path, origin: str, slug: str, version: str) -> Dict[str, str]:
     """Return {path: sha256} for a project version, caching the checksum list."""
-    cached = cache / MANIFEST_FOLDER / slug / version / "SHA256SUMS.txt"
+    cached = cache / origin / MANIFEST_FOLDER / slug / version / "SHA256SUMS.txt"
+    _refuse_symlinks(cache, cached)
     if cached.is_file():
         entries = _parse_cached_manifest(cached.read_text())
     else:
@@ -270,6 +296,7 @@ def _manifest(remote: _Remote, cache: Path, slug: str, version: str) -> Dict[str
                 ) from exc
             raise
         cached.parent.mkdir(parents=True, exist_ok=True)
+        _refuse_symlinks(cache, cached)
         partial = cached.with_name(f".{cached.name}.{uuid.uuid4().hex}.part")
         partial.write_text("".join(f"{checksum}  {name}\n" for name, checksum in entries))
         os.replace(partial, cached)
@@ -327,3 +354,26 @@ def _is_safe_path(path: str) -> bool:
 def _check_name(value: str, kind: str) -> None:
     if not isinstance(value, str) or not _NAME.match(value):
         raise ValueError(f"{value!r} is not a valid {kind} name")
+
+
+def _origin_folder(base_url: str) -> str:
+    """Name the cache folder for a server, e.g. physionet.org or http_localhost_8000."""
+    parts = urlsplit(base_url)
+    if not parts.hostname:
+        raise ValueError(f"{base_url!r} is not a valid base URL")
+    folder = parts.hostname.lower()
+    if parts.port:
+        folder += f"_{parts.port}"
+    if parts.scheme.lower() != "https":
+        folder = f"{parts.scheme.lower()}_{folder}"
+    folder = re.sub(r"[^A-Za-z0-9.-]", "_", folder)
+    return folder if _NAME.match(folder) else f"host_{folder}"
+
+
+def _refuse_symlinks(cache: Path, path: Path) -> None:
+    """Refuse a cache path if a symbolic link below the cache folder could redirect it."""
+    current = cache
+    for part in path.relative_to(cache).parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"Refusing to use {current}: symbolic links are not allowed in the cache")
