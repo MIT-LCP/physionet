@@ -11,7 +11,7 @@ from physionet.validate import ValidationConfig, validate_dataset
 from physionet.validate.checks import check_filesystem, check_integrity, check_privacy, check_quality
 from physionet.validate.checks.csv_layout import is_unix_timestamp
 from physionet.validate.checks.empatica import is_e4_ibi_file, is_e4_sensor_file
-from physionet.validate.models import Severity
+from physionet.validate.models import CheckCategory, Severity
 
 
 E4_EXAMPLE = Path(__file__).parent.parent / "fixtures" / "e4_session"
@@ -19,13 +19,17 @@ E4_EXAMPLE = Path(__file__).parent.parent / "fixtures" / "e4_session"
 
 def write_e4_sensor(directory):
     (directory / "EDA.csv").write_text(
-        "1673588411.000000\n4.000000\n0.123456\n0.234567\n0.345678\n"
+        "5680288411.000000\n4.000000\n0.123456\n0.234567\n0.345678\n"
     )
 
 
-@pytest.mark.parametrize("timestamp", ["1673588411", "631152000", "5680281600"])
+@pytest.mark.parametrize(
+    ("timestamp", "realistic"),
+    [("1673588411", True), ("631152000", True), ("5680281600", False)],
+)
 @pytest.mark.parametrize("empty_tags", [True, False])
-def test_integer_and_shifted_e4_timestamps_validate_cleanly(tmp_path, timestamp, empty_tags):
+def test_integer_and_shifted_e4_timestamps(tmp_path, timestamp, realistic, empty_tags):
+    """Format checks pass either way; only dates up to today get a date warning."""
     (tmp_path / "ACC.csv").write_text(
         f"{timestamp},{timestamp},{timestamp}\n"
         "32,32,32\n"
@@ -41,8 +45,12 @@ def test_integer_and_shifted_e4_timestamps_validate_cleanly(tmp_path, timestamp,
     )
 
     assert result.total_errors == 0
-    assert result.total_warnings == 0
     assert result.total_info == (1 if empty_tags else 0)
+    warnings = result.check_results[CheckCategory.PRIVACY].issues
+    expected_files = {"ACC.csv", "EDA.csv"} | (set() if empty_tags else {"tags.csv"})
+    assert result.total_warnings == len(warnings)
+    assert {issue.file for issue in warnings} == (expected_files if realistic else set())
+    assert all("may be real" in issue.message for issue in warnings)
 
 
 @pytest.mark.parametrize(
@@ -50,7 +58,7 @@ def test_integer_and_shifted_e4_timestamps_validate_cleanly(tmp_path, timestamp,
     [
         ("631152000", True),
         ("5680281600.123456", True),
-        ("1673588411", True),
+        ("5680288411", True),
         ("63115200", False),
         ("56802816000", False),
         ("-631152000", False),
@@ -66,7 +74,7 @@ def test_unix_timestamp_shape(timestamp, expected):
 def test_e4_headerless_sensor_files_do_not_trigger_csv_structure_errors(tmp_path):
     write_e4_sensor(tmp_path)
     (tmp_path / "ACC.csv").write_text(
-        "1673588411.000000,1673588411.000000,1673588411.000000\n"
+        "5680288411.000000,5680288411.000000,5680288411.000000\n"
         "32.000000,32.000000,32.000000\n"
         "27,-25,50\n27,-24,50\n"
     )
@@ -79,7 +87,7 @@ def test_e4_headerless_sensor_files_do_not_trigger_csv_structure_errors(tmp_path
 
 def test_e4_tags_timestamps_are_not_reported_as_phone_numbers(tmp_path):
     write_e4_sensor(tmp_path)
-    (tmp_path / "tags.csv").write_text("1673588411.000000\n1673588422.000000\n")
+    (tmp_path / "tags.csv").write_text("5680288411.000000\n5680288422.000000\n")
 
     result = check_privacy(tmp_path, ValidationConfig())
 
@@ -115,7 +123,7 @@ def test_e4_sensor_still_reports_malformed_rows(tmp_path):
 
 
 def test_e4_sensor_with_metadata_but_no_samples_warns(tmp_path):
-    (tmp_path / "EDA.csv").write_text("1673588411\n4\n")
+    (tmp_path / "EDA.csv").write_text("5680288411\n4\n")
 
     result = check_integrity(tmp_path, ValidationConfig())
 
@@ -125,7 +133,7 @@ def test_e4_sensor_with_metadata_but_no_samples_warns(tmp_path):
 
 def test_e4_tags_first_row_is_checked_as_data(tmp_path):
     write_e4_sensor(tmp_path)
-    (tmp_path / "tags.csv").write_text("1673588411,unexpected\n1673588422\n")
+    (tmp_path / "tags.csv").write_text("5680288411,unexpected\n5680288422\n")
 
     result = check_integrity(tmp_path, ValidationConfig())
 
@@ -151,7 +159,7 @@ def test_other_empty_files_and_phone_numbers_still_warn(tmp_path):
 
 def test_non_timestamp_phone_in_e4_tags_still_warns(tmp_path):
     write_e4_sensor(tmp_path)
-    (tmp_path / "tags.csv").write_text("1673588411.000000\n555-123-4567\n")
+    (tmp_path / "tags.csv").write_text("5680288411.000000\n555-123-4567\n")
 
     result = check_privacy(tmp_path, ValidationConfig())
 
@@ -162,7 +170,7 @@ def test_non_timestamp_phone_in_e4_tags_still_warns(tmp_path):
 @pytest.mark.parametrize("sample_large_files", [True, False])
 def test_e4_acc_quality_checks_each_data_channel(tmp_path, sample_large_files):
     (tmp_path / "ACC.csv").write_text(
-        "1673588411,1673588411,1673588411\n"
+        "5680288411,5680288411,5680288411\n"
         "32,32,32\n"
         ",,50\n,,51\n"
     )
@@ -177,7 +185,7 @@ def test_e4_acc_quality_checks_each_data_channel(tmp_path, sample_large_files):
 
 
 def test_e4_quality_range_excludes_timestamp_and_sample_rate(tmp_path):
-    (tmp_path / "EDA.csv").write_text("1673588411\n4\n0.5\n1.5\n")
+    (tmp_path / "EDA.csv").write_text("5680288411\n4\n0.5\n1.5\n")
 
     result = check_quality(tmp_path, ValidationConfig(value_ranges={"eda": (0, 1)}))
 
@@ -211,7 +219,7 @@ def test_generic_csv_named_like_e4_sensor_keeps_its_header(tmp_path):
 
 
 def test_empty_tags_without_valid_e4_neighbor_remains_an_error(tmp_path):
-    (tmp_path / "EDA.csv").write_text("1673588411\n5\n0.123456\n")
+    (tmp_path / "EDA.csv").write_text("5680288411\n5\n0.123456\n")
     (tmp_path / "tags.csv").write_text("")
 
     filesystem = check_filesystem(tmp_path, ValidationConfig())
@@ -227,9 +235,9 @@ def test_empty_tags_without_valid_e4_neighbor_remains_an_error(tmp_path):
 def test_malformed_e4_tags_extra_fields_are_scanned_for_phi(tmp_path, sample_large_files):
     write_e4_sensor(tmp_path)
     (tmp_path / "tags.csv").write_text(
-        "1673588411.000000,person@example.com,555-123-4567\n"
-        "1673588422.000000\n"
-        "1673588433.000000,123-45-6789\n"
+        "5680288411.000000,person@example.com,555-123-4567\n"
+        "5680288422.000000\n"
+        "5680288433.000000,123-45-6789\n"
     )
 
     result = check_privacy(tmp_path, ValidationConfig(sample_large_files=sample_large_files))
@@ -293,7 +301,7 @@ def test_synthetic_e4_example_validates_through_python_and_cli(tmp_path):
 
 
 def test_e4_hr_file_is_recognized_and_range_checked(tmp_path):
-    (tmp_path / "HR.csv").write_text("1673588421.000000\n1.000000\n72.00\n400.00\n")
+    (tmp_path / "HR.csv").write_text("5680288421.000000\n1.000000\n72.00\n400.00\n")
 
     assert is_e4_sensor_file(tmp_path / "HR.csv")
     result = check_quality(tmp_path, ValidationConfig(value_ranges={"hr": (20, 250)}))
@@ -304,7 +312,7 @@ def test_e4_hr_file_is_recognized_and_range_checked(tmp_path):
 
 
 def test_e4_hr_confirms_tags_without_other_sensors(tmp_path):
-    (tmp_path / "HR.csv").write_text("1673588421.000000\n1.000000\n72.00\n")
+    (tmp_path / "HR.csv").write_text("5680288421.000000\n1.000000\n72.00\n")
     (tmp_path / "tags.csv").write_text("")
 
     result = validate_dataset(
@@ -317,7 +325,7 @@ def test_e4_hr_confirms_tags_without_other_sensors(tmp_path):
 
 def test_e4_ibi_file_uses_offset_and_interval_columns(tmp_path):
     (tmp_path / "IBI.csv").write_text(
-        "1673588411.000000, IBI\n12.343750,0.828125\n13.156250,0.812500\n15.656250,2.500000\n"
+        "5680288411.000000, IBI\n12.343750,0.828125\n13.156250,0.812500\n15.656250,2.500000\n"
     )
 
     assert is_e4_ibi_file(tmp_path / "IBI.csv")
@@ -335,7 +343,7 @@ def test_e4_ibi_file_uses_offset_and_interval_columns(tmp_path):
 
 
 def test_e4_ibi_with_no_beats_is_information_not_a_warning(tmp_path):
-    (tmp_path / "IBI.csv").write_text("1673588411.000000, IBI\n")
+    (tmp_path / "IBI.csv").write_text("5680288411.000000, IBI\n")
 
     result = check_integrity(tmp_path, ValidationConfig())
 
@@ -344,7 +352,7 @@ def test_e4_ibi_with_no_beats_is_information_not_a_warning(tmp_path):
 
 
 def test_e4_ibi_still_reports_malformed_rows(tmp_path):
-    (tmp_path / "IBI.csv").write_text("1673588411.000000, IBI\n12.343750\n")
+    (tmp_path / "IBI.csv").write_text("5680288411.000000, IBI\n12.343750\n")
 
     result = check_integrity(tmp_path, ValidationConfig())
 
@@ -359,8 +367,8 @@ def test_generic_csv_named_ibi_keeps_its_header(tmp_path):
 
 
 def test_lowercase_e4_file_names_are_recognized(tmp_path):
-    (tmp_path / "eda.csv").write_text("1673588411\n4\n0.123456\n")
-    (tmp_path / "acc.csv").write_text("1673588411, 1673588411, 1673588411\n32, 32, 32\n-1, 63, 12\n")
+    (tmp_path / "eda.csv").write_text("5680288411\n4\n0.123456\n")
+    (tmp_path / "acc.csv").write_text("5680288411, 5680288411, 5680288411\n32, 32, 32\n-1, 63, 12\n")
     (tmp_path / "TAGS.csv").write_text("")
 
     result = validate_dataset(
@@ -373,8 +381,8 @@ def test_lowercase_e4_file_names_are_recognized(tmp_path):
 
 
 def test_upper_case_csv_and_txt_extensions_are_validated(tmp_path):
-    (tmp_path / "EDA.CSV").write_text("1673588411\n4\n0.123456\n0.234567,0.1\n")
-    (tmp_path / "TAGS.CSV").write_text("1673588411\n555-123-4567\n")
+    (tmp_path / "EDA.CSV").write_text("5680288411\n4\n0.123456\n0.234567,0.1\n")
+    (tmp_path / "TAGS.CSV").write_text("5680288411\n555-123-4567\n")
     (tmp_path / "contacts.Csv").write_text("contact\nperson@example.com\n")
     (tmp_path / "NOTES.TXT").write_text("Call 555-987-6543\n")
 
@@ -389,7 +397,7 @@ def test_upper_case_csv_and_txt_extensions_are_validated(tmp_path):
 
 
 def test_upper_case_csv_extension_is_quality_checked(tmp_path):
-    (tmp_path / "TEMP.CSV").write_text("1673588411\n4\n31.5\n99.0\n")
+    (tmp_path / "TEMP.CSV").write_text("5680288411\n4\n31.5\n99.0\n")
 
     result = check_quality(tmp_path, ValidationConfig(value_ranges={"temp": (30, 40)}))
 
@@ -398,7 +406,7 @@ def test_upper_case_csv_extension_is_quality_checked(tmp_path):
 
 def test_phone_number_in_e4_tags_extra_field_is_reported(tmp_path):
     write_e4_sensor(tmp_path)
-    (tmp_path / "tags.csv").write_text("1673588411,2125551234\n")
+    (tmp_path / "tags.csv").write_text("5680288411,2125551234\n")
 
     result = check_privacy(tmp_path, ValidationConfig())
 
@@ -408,7 +416,7 @@ def test_phone_number_in_e4_tags_extra_field_is_reported(tmp_path):
 
 
 def test_ibi_file_confirms_empty_e4_tags(tmp_path):
-    (tmp_path / "IBI.csv").write_text("1673588411.000000, IBI\n12.343750,0.828125\n")
+    (tmp_path / "IBI.csv").write_text("5680288411.000000, IBI\n12.343750,0.828125\n")
     (tmp_path / "tags.csv").write_text("")
 
     result = validate_dataset(

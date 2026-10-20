@@ -34,6 +34,8 @@ class ValidationIssue:
     column: Optional[str] = None
     value: Optional[str] = None
     suggestion: Optional[str] = None
+    # Groups issues of one kind, e.g. so a summary can shorten long runs of them.
+    code: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert issue to dictionary format."""
@@ -52,6 +54,8 @@ class ValidationIssue:
             result["value"] = self.value
         if self.suggestion:
             result["suggestion"] = self.suggestion
+        if self.code:
+            result["code"] = self.code
         return result
 
 
@@ -126,8 +130,12 @@ class ValidationResult:
             return "warning"
         return "pass"
 
-    def summary(self) -> str:
-        """Generate a human-readable summary."""
+    def summary(self, max_per_code: Optional[int] = None) -> str:
+        """Generate a human-readable summary.
+
+        With max_per_code, show at most that many issues sharing a code in each
+        category and count the rest. Issues without a code are always shown.
+        """
         # Format timestamp as human-readable
         try:
             dt = datetime.fromisoformat(self.timestamp.replace('Z', '+00:00'))
@@ -184,12 +192,27 @@ class ValidationResult:
 
             lines.append(f"{status_icon} {category.value.replace('_', ' ').title()}{issue_summary}")
 
+            shown_per_code: Dict[str, int] = {}
+            hidden_per_code: Dict[str, int] = {}
             for issue in result.issues:
+                if issue.code and max_per_code is not None:
+                    if shown_per_code.get(issue.code, 0) >= max_per_code:
+                        hidden_per_code[issue.code] = hidden_per_code.get(issue.code, 0) + 1
+                        continue
+                    shown_per_code[issue.code] = shown_per_code.get(issue.code, 0) + 1
                 icon = "✗" if issue.severity == Severity.ERROR else "⚠"
-                location = f" {issue.file}"
-                if issue.line:
-                    location += f":{issue.line}"
-                lines.append(f"  {icon}{location} - {issue.message}")
+                if issue.file:
+                    location = f" {issue.file}"
+                    if issue.line:
+                        location += f":{issue.line}"
+                    lines.append(f"  {icon}{location} - {issue.message}")
+                else:
+                    lines.append(f"  {icon} {issue.message}")
+            for code, hidden in hidden_per_code.items():
+                lines.append(
+                    f"  … {hidden} more {code} issue{'s' if hidden != 1 else ''} "
+                    f"not shown here; the saved report lists them all"
+                )
 
         lines.append("")
 

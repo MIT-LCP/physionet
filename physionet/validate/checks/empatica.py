@@ -11,6 +11,8 @@ Format: https://www.empatica.com/blog/decoding-wearable-sensor-signals-what-to-e
   treated as E4 when a recognized sensor or IBI file sits beside it, and only
   its event_time column is exempt from the phone-number pattern.
 
+Start times and event times are still checked as dates by the privacy check.
+
 File names are matched in any letter case. tests/fixtures/e4_session holds a
 small synthetic example.
 """
@@ -101,11 +103,16 @@ def get_e4_csv_layout(file_path: Path) -> Optional[CsvLayout]:
     """Describe recognized E4 sensor, IBI, and event-tag files for CSV checks."""
     columns = e4_sensor_columns(file_path)
     if columns is not None:
-        return CsvLayout(columns=columns, metadata_rows=2)
+        return CsvLayout(
+            columns=columns,
+            metadata_rows=2,
+            metadata_row_names=("start_time", "sample_rate"),
+        )
     if is_e4_ibi_file(file_path):
         return CsvLayout(
             columns=_IBI_COLUMNS,
             metadata_rows=1,
+            metadata_row_names=("start_time",),
             no_data_message="No Empatica E4 inter-beat intervals detected (IBI.csv has only its start-time row)",
         )
     if is_e4_tags_file(file_path):
