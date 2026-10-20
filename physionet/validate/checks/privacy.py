@@ -14,8 +14,8 @@ from physionet.validate.checks.dates import (
     DateRange, RealisticDateFinder, dates_in_text, is_time_like_column,
 )
 
-# Report realistic dates for at most this many files, then summarize the rest.
-MAX_DATE_WARNING_FILES = 10
+# Identifies date warnings so the terminal summary can shorten them.
+POSSIBLE_REAL_DATE = "possible-real-date"
 
 # Pattern names for better error messages
 PHI_PATTERN_NAMES = {
@@ -87,7 +87,8 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
                     for pattern in config.phi_patterns]
 
     date_finder = (
-        RealisticDateFinder(config.date_lookback_years) if config.date_lookback_years else None
+        RealisticDateFinder(config.date_lookback_years)
+        if config.date_lookback_years is not None else None
     )
     date_findings: List[Tuple[str, Dict[Optional[str], DateRange]]] = []
 
@@ -127,7 +128,7 @@ def _report_realistic_dates(
     result: CheckResult,
 ) -> None:
     """Warn about files holding dates that may be real, one warning per file."""
-    for relative_path, ranges in findings[:MAX_DATE_WARNING_FILES]:
+    for relative_path, ranges in findings:
         places = []
         for column, date_range in ranges.items():
             where = f"column '{column}': " if column is not None else ""
@@ -144,20 +145,7 @@ def _report_realistic_dates(
                     f"({'; '.join(places)})"
                 ),
                 suggestion="Confirm these dates have been shifted or removed",
-            )
-        )
-    remaining = len(findings) - MAX_DATE_WARNING_FILES
-    if remaining > 0:
-        result.issues.append(
-            ValidationIssue(
-                severity=Severity.WARNING,
-                category=CheckCategory.PRIVACY,
-                message=(
-                    f"Dates within the last {lookback_years} years also found in "
-                    f"{remaining} more file{'s' if remaining != 1 else ''} "
-                    f"(showing first {MAX_DATE_WARNING_FILES})"
-                ),
-                suggestion="Confirm these dates have been shifted or removed",
+                code=POSSIBLE_REAL_DATE,
             )
         )
 

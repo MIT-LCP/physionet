@@ -1,5 +1,8 @@
 """Dates that may be real are flagged for review; shifted or ambiguous values are not."""
 
+import json
+import subprocess
+import sys
 from datetime import date
 
 import pytest
@@ -149,16 +152,62 @@ def test_date_check_can_be_turned_off(tmp_path):
     assert _date_warnings(result) == []
 
 
-def test_many_files_with_dates_are_summarized(tmp_path):
+def test_every_file_with_dates_is_kept_and_only_the_terminal_is_shortened(tmp_path):
     for number in range(13):
         (tmp_path / f"visit_{number:02d}.csv").write_text("charttime\n2019-03-04\n")
+    (tmp_path / "README.md").write_text("Synthetic visits.\n")
+    report = tmp_path / "report.json"
 
     result = validate_dataset(
         str(tmp_path), ValidationConfig(check_documentation=False), show_progress=False
     )
     warnings = _date_warnings(result.check_results[CheckCategory.PRIVACY])
+    assert sorted(issue.file for issue in warnings) == [f"visit_{n:02d}.csv" for n in range(13)]
+    assert all(issue.to_dict()["code"] == "possible-real-date" for issue in warnings)
 
-    assert len(warnings) == 11
-    assert warnings[-1].file is None
-    assert "3 more files (showing first 10)" in warnings[-1].message
-    assert "  ⚠ Dates within the last 200 years also found in 3 more files" in result.summary()
+    assert result.summary().count("may be real") == 13
+    short = result.summary(max_per_code=10)
+    assert short.count("may be real") == 10
+    assert "3 more possible-real-date issues not shown here" in short
+
+    cli = subprocess.run(
+        [sys.executable, "-m", "physionet", "validate", str(tmp_path), "--report", str(report)],
+        capture_output=True, text=True,
+    )
+    assert cli.stdout.count("may be real") == 10
+    assert "3 more possible-real-date issues" in cli.stdout
+    issues = json.loads(report.read_text())["checks"]["privacy"]["issues"]
+    assert len([issue for issue in issues if issue.get("code") == "possible-real-date"]) == 13
+
+    markdown = tmp_path / "PHYSIONET_REPORT.md"
+    subprocess.run([sys.executable, "-m", "physionet", "validate", str(tmp_path)], capture_output=True)
+    assert markdown.read_text().count("may be real") == 13
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Seen on 13/01/2023.", "Seen on 13/01/2023, then home.", "Seen on 13/01/2023"],
+)
+def test_sentence_ending_dates_are_reported(tmp_path, text):
+    (tmp_path / "notes.txt").write_text(text + "\n")
+
+    warnings = _date_warnings(check_privacy(tmp_path, ValidationConfig()))
+
+    assert [issue.file for issue in warnings] == ["notes.txt"]
+    assert "2023-01-13" in warnings[0].message
+
+
+@pytest.mark.parametrize("text", ["13.01.2023.5", "1.13.01.2023"])
+def test_numbers_extending_a_date_are_not_dates(text):
+    assert list(dates_in_text(text)) == []
+
+
+@pytest.mark.parametrize("value", [-1, 0, 1001, 3000, 1.5, "200", True])
+def test_invalid_date_window_is_rejected(value):
+    with pytest.raises(ValueError, match="date_lookback_years"):
+        ValidationConfig(date_lookback_years=value)
+
+
+@pytest.mark.parametrize("value", [None, 1, 200, 1000])
+def test_valid_date_windows_are_accepted(value):
+    assert ValidationConfig(date_lookback_years=value).date_lookback_years == value

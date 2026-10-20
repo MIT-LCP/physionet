@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterator, Optional
 
+from physionet.validate.config import validate_lookback_years
+
 
 _MONTH_NAME = (
     r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
@@ -32,7 +34,8 @@ _MONTHS = {name: number for number, name in enumerate(
 )}
 
 _YEAR_FIRST = re.compile(r"(?<!\d)(\d{4})([-/.])(\d{1,2})\2(\d{1,2})(?!\d)")
-_YEAR_LAST = re.compile(r"(?<![\d.])(\d{1,2})([-/.])(\d{1,2})\2(\d{4})(?![\d.])")
+# A trailing period is allowed (sentence end), but not a decimal like 13.01.2023.5.
+_YEAR_LAST = re.compile(r"(?<!\d)(?<!\d\.)(\d{1,2})([-/.])(\d{1,2})\2(\d{4})(?!\d|\.\d)")
 _DAY_MONTH_YEAR = re.compile(
     rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+{_MONTH_NAME},?\s+(\d{{4}})\b", re.IGNORECASE
 )
@@ -134,6 +137,7 @@ class RealisticDateFinder:
     """Collect dates between lookback_years ago and today."""
 
     def __init__(self, lookback_years: int, today: Optional[date] = None):
+        validate_lookback_years(lookback_years)
         today = today or datetime.now(timezone.utc).date()
         self.lookback_years = lookback_years
         self.start = date(today.year - lookback_years, 1, 1)

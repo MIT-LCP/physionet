@@ -8,6 +8,9 @@ from pathlib import Path
 
 from physionet.validate import validate_dataset, ValidationConfig
 
+# Issues of one kind (such as date warnings) shown per category in the terminal.
+TERMINAL_MAX_PER_CODE = 10
+
 
 def main():
     """Main entry point for the CLI."""
@@ -263,7 +266,8 @@ def _handle_validate(args):
         result = validate_dataset(str(dataset_path), config, show_progress=True)
         print()
 
-        print(result.summary())
+        # Keep the terminal readable; the saved report below lists every issue.
+        print(result.summary(max_per_code=TERMINAL_MAX_PER_CODE))
 
         # Save validation report - either to specified path or default location
         if args.report:

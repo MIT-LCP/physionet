@@ -147,8 +147,9 @@ de-identified datasets usually shift dates (often into the future). This covers
 written dates in CSV and text files, and Unix timestamps in columns with
 time-like names such as `charttime` or `timestamp`. Dates shifted into that
 window still need to be confirmed by the submitter. Set
-`ValidationConfig(date_lookback_years=...)` to change the window, or `None` to
-turn the check off.
+`ValidationConfig(date_lookback_years=...)` to a number of years from 1 to 1000
+to change the window, or `None` to turn the check off. The terminal shows date
+warnings for the first 10 files; the saved report lists every file.
 
 CSV exports from the Empatica E4 wearable are recognized, so their headerless
 layout, empty `tags.csv` files, and Unix timestamps don't produce false errors

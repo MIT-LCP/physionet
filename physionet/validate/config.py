@@ -3,6 +3,17 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+MAX_LOOKBACK_YEARS = 1000
+
+
+def validate_lookback_years(value) -> None:
+    """Reject date windows that would contain no dates or cannot be represented."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_LOOKBACK_YEARS:
+        raise ValueError(
+            f"date_lookback_years must be a whole number from 1 to {MAX_LOOKBACK_YEARS}, "
+            f"or None to turn the date check off (got {value!r})"
+        )
+
 
 @dataclass
 class ValidationConfig:
@@ -45,3 +56,7 @@ class ValidationConfig:
         r"\b[\w\.-]+@[\w\.-]+\.\w+\b",  # Email pattern
         r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b",  # Phone pattern
     ])
+
+    def __post_init__(self) -> None:
+        if self.date_lookback_years is not None:
+            validate_lookback_years(self.date_lookback_years)
