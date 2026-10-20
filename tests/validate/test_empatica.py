@@ -10,7 +10,7 @@ import pytest
 from physionet.validate import ValidationConfig, validate_dataset
 from physionet.validate.checks import check_filesystem, check_integrity, check_privacy, check_quality
 from physionet.validate.checks.csv_layout import is_unix_timestamp
-from physionet.validate.checks.empatica import is_e4_sensor_file
+from physionet.validate.checks.empatica import is_e4_ibi_file, is_e4_sensor_file
 from physionet.validate.models import Severity
 
 
@@ -234,11 +234,9 @@ def test_malformed_e4_tags_extra_fields_are_scanned_for_phi(tmp_path, sample_lar
 
     result = check_privacy(tmp_path, ValidationConfig(sample_large_files=sample_large_files))
 
-    assert {issue.column for issue in result.issues} == {"extra field"}
-    assert len(result.issues) == 3
-    assert any("email address" in issue.message for issue in result.issues)
-    assert any("phone number" in issue.message for issue in result.issues)
-    assert any("SSN" in issue.message for issue in result.issues)
+    # One warning per column, as for any other CSV column.
+    assert [issue.column for issue in result.issues] == ["extra field"]
+    assert "Potential private information" in result.issues[0].message
     assert not any("Could not perform" in issue.message for issue in result.issues)
 
 
@@ -247,8 +245,7 @@ def test_malformed_generic_csv_extra_fields_are_scanned_for_phi(tmp_path):
 
     result = check_privacy(tmp_path, ValidationConfig())
 
-    assert {issue.column for issue in result.issues} == {"extra field"}
-    assert len(result.issues) == 2
+    assert [issue.column for issue in result.issues] == ["extra field"]
     assert not any("Could not perform" in issue.message for issue in result.issues)
 
 
@@ -271,7 +268,7 @@ def test_synthetic_e4_example_validates_through_python_and_cli(tmp_path):
     assert result.status == "pass"
     assert result.total_errors == 0
     assert result.total_warnings == 0
-    assert result.dataset_stats.file_count == 6
+    assert result.dataset_stats.file_count == 8
     assert set(result.to_dict()["checks"]) == {
         "filesystem", "documentation", "integrity", "quality", "privacy"
     }
@@ -289,3 +286,80 @@ def test_synthetic_e4_example_validates_through_python_and_cli(tmp_path):
     assert report_data["summary"]["status"] == "pass"
     assert report_data["summary"]["total_errors"] == 0
     assert report_data["summary"]["total_warnings"] == 0
+
+
+def test_e4_hr_file_is_recognized_and_range_checked(tmp_path):
+    (tmp_path / "HR.csv").write_text("1673588421.000000\n1.000000\n72.00\n400.00\n")
+
+    assert is_e4_sensor_file(tmp_path / "HR.csv")
+    result = check_quality(tmp_path, ValidationConfig(value_ranges={"hr": (20, 250)}))
+
+    flagged = [issue for issue in result.issues if issue.column == "hr"]
+    assert len(flagged) == 1 and "400" in flagged[0].message
+    assert check_integrity(tmp_path, ValidationConfig()).issues == []
+
+
+def test_e4_hr_confirms_tags_without_other_sensors(tmp_path):
+    (tmp_path / "HR.csv").write_text("1673588421.000000\n1.000000\n72.00\n")
+    (tmp_path / "tags.csv").write_text("")
+
+    result = validate_dataset(
+        str(tmp_path), ValidationConfig(check_documentation=False), show_progress=False
+    )
+
+    assert result.total_errors == 0
+    assert result.total_warnings == 0
+
+
+def test_e4_ibi_file_uses_offset_and_interval_columns(tmp_path):
+    (tmp_path / "IBI.csv").write_text(
+        "1673588411.000000, IBI\n12.343750,0.828125\n13.156250,0.812500\n"
+    )
+
+    assert is_e4_ibi_file(tmp_path / "IBI.csv")
+    result = validate_dataset(
+        str(tmp_path),
+        ValidationConfig(check_documentation=False, value_ranges={"ibi": (0.3, 2.0)}),
+        show_progress=False,
+    )
+
+    assert result.total_errors == 0
+    assert result.total_warnings == 0
+
+
+def test_e4_ibi_with_no_beats_is_information_not_a_warning(tmp_path):
+    (tmp_path / "IBI.csv").write_text("1673588411.000000, IBI\n")
+
+    result = check_integrity(tmp_path, ValidationConfig())
+
+    assert [issue.severity for issue in result.issues] == [Severity.INFO]
+    assert "No Empatica E4 inter-beat intervals" in result.issues[0].message
+
+
+def test_e4_ibi_still_reports_malformed_rows(tmp_path):
+    (tmp_path / "IBI.csv").write_text("1673588411.000000, IBI\n12.343750\n")
+
+    result = check_integrity(tmp_path, ValidationConfig())
+
+    assert any(issue.severity == Severity.ERROR and "expected 2" in issue.message
+               for issue in result.issues)
+
+
+def test_generic_csv_named_ibi_keeps_its_header(tmp_path):
+    (tmp_path / "IBI.csv").write_text("time,ibi\n1,0.8\n")
+
+    assert not is_e4_ibi_file(tmp_path / "IBI.csv")
+
+
+def test_lowercase_e4_file_names_are_recognized(tmp_path):
+    (tmp_path / "eda.csv").write_text("1673588411\n4\n0.123456\n")
+    (tmp_path / "acc.csv").write_text("1673588411, 1673588411, 1673588411\n32, 32, 32\n-1, 63, 12\n")
+    (tmp_path / "TAGS.csv").write_text("")
+
+    result = validate_dataset(
+        str(tmp_path), ValidationConfig(check_documentation=False), show_progress=False
+    )
+
+    assert result.total_errors == 0
+    assert result.total_warnings == 0
+    assert result.total_info == 1

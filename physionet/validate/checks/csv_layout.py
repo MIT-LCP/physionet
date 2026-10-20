@@ -11,12 +11,15 @@ class CsvLayout:
 
     With no explicit columns, the first row is treated as a header. Explicit
     columns describe a headerless file; metadata_rows precede its data rows.
+    A file with no data rows gets a warning unless no_data_message is set, in
+    which case that message is reported as information.
     """
 
     columns: Optional[Tuple[str, ...]] = None
     metadata_rows: int = 0
     allow_empty: bool = False
     empty_message: Optional[str] = None
+    no_data_message: Optional[str] = None
     ignore_unix_timestamps_as_phone_numbers: bool = False
 
     def dict_reader(self, stream: TextIO) -> csv.DictReader:

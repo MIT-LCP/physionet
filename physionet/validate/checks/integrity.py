@@ -147,10 +147,10 @@ def _validate_csv_structure(csv_file: Path, base_path: Path, result: CheckResult
             if row_count == 0 and not layout.allow_empty:
                 result.issues.append(
                     ValidationIssue(
-                        severity=Severity.WARNING,
+                        severity=Severity.INFO if layout.no_data_message else Severity.WARNING,
                         category=CheckCategory.INTEGRITY,
                         file=str(csv_file.relative_to(base_path)),
-                        message="CSV file contains only header row (no data)",
+                        message=layout.no_data_message or "CSV file contains only header row (no data)",
                     )
                 )
 
