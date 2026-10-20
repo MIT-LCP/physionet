@@ -234,9 +234,12 @@ def test_malformed_e4_tags_extra_fields_are_scanned_for_phi(tmp_path, sample_lar
 
     result = check_privacy(tmp_path, ValidationConfig(sample_large_files=sample_large_files))
 
-    # One warning per column, as for any other CSV column.
-    assert [issue.column for issue in result.issues] == ["extra field"]
-    assert "Potential private information" in result.issues[0].message
+    # One warning per column and pattern.
+    assert {issue.column for issue in result.issues} == {"extra field"}
+    assert len(result.issues) == 3
+    assert any("email address" in issue.message for issue in result.issues)
+    assert any("phone number" in issue.message for issue in result.issues)
+    assert any("SSN" in issue.message for issue in result.issues)
     assert not any("Could not perform" in issue.message for issue in result.issues)
 
 
@@ -245,7 +248,8 @@ def test_malformed_generic_csv_extra_fields_are_scanned_for_phi(tmp_path):
 
     result = check_privacy(tmp_path, ValidationConfig())
 
-    assert [issue.column for issue in result.issues] == ["extra field"]
+    assert {issue.column for issue in result.issues} == {"extra field"}
+    assert len(result.issues) == 2
     assert not any("Could not perform" in issue.message for issue in result.issues)
 
 

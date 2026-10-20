@@ -172,9 +172,8 @@ def _check_csv_privacy(
     """Check a CSV file for privacy issues."""
     relative_path = str(csv_file.relative_to(base_path))
 
-    # Track which columns have which types of issues (to report only once per column)
-    # Maps column name to the pattern name that matched
-    phi_columns = {}  # {column: pattern_name}
+    # Report each pattern at most once per column, including malformed extra fields.
+    phi_columns = {}  # {column: set of pattern names}
     age_columns = set()  # Columns with age violations
     layout = get_csv_layout(csv_file)
 
@@ -224,16 +223,13 @@ def _check_csv_privacy(
 
                         value_str = str(value).strip()
 
-                        # Check for PHI patterns (only track if not already found in this column)
-                        if col not in phi_columns:
-                            for pattern, pattern_name in pattern_info:
-                                if (pattern_name == "phone number"
-                                        and layout.ignore_unix_timestamps_as_phone_numbers
-                                        and is_unix_timestamp(value_str)):
-                                    continue
-                                if pattern.search(value_str):
-                                    phi_columns[col] = pattern_name
-                                    break
+                        for pattern, pattern_name in pattern_info:
+                            if (pattern_name == "phone number"
+                                    and layout.ignore_unix_timestamps_as_phone_numbers
+                                    and is_unix_timestamp(value_str)):
+                                continue
+                            if pattern.search(value_str):
+                                phi_columns.setdefault(col, set()).add(pattern_name)
 
                         # Check for age violations (only track if not already found in this column)
                         if col not in age_columns and "age" in col.lower():
@@ -245,17 +241,18 @@ def _check_csv_privacy(
                                 pass
 
         # Report one issue per column type with specific pattern info
-        for col, pattern_name in phi_columns.items():
-            result.issues.append(
-                ValidationIssue(
-                    severity=Severity.WARNING,
-                    category=CheckCategory.PRIVACY,
-                    file=relative_path,
-                    column=col,
-                    message=f"Potential private information detected in column '{col}' (pattern: {pattern_name})",
-                    suggestion="Review and remove or de-identify sensitive information",
+        for col, pattern_names in phi_columns.items():
+            for pattern_name in sorted(pattern_names):
+                result.issues.append(
+                    ValidationIssue(
+                        severity=Severity.WARNING,
+                        category=CheckCategory.PRIVACY,
+                        file=relative_path,
+                        column=col,
+                        message=f"Potential private information detected in column '{col}' (pattern: {pattern_name})",
+                        suggestion="Review and remove or de-identify sensitive information",
+                    )
                 )
-            )
 
         for col in age_columns:
             result.issues.append(
