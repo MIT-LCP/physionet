@@ -15,6 +15,18 @@ def validate_lookback_years(value) -> None:
         )
 
 
+def should_ignore(name: str, patterns: List[str]) -> bool:
+    """Match a file or directory name against ignore patterns.
+
+    A pattern starting with "*" matches a name ending with the rest of it;
+    any other pattern matches when it appears anywhere in the name.
+    """
+    return any(
+        name.endswith(pattern[1:]) if pattern.startswith("*") else pattern in name
+        for pattern in patterns
+    )
+
+
 @dataclass
 class ValidationConfig:
     """Configuration for dataset validation."""

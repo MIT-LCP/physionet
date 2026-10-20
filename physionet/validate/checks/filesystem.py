@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
-from physionet.validate.config import ValidationConfig
+from physionet.validate.config import ValidationConfig, should_ignore
 from physionet.validate.checks.csv_formats import get_csv_layout
 
 # Proprietary file formats and their recommended open alternatives
@@ -64,13 +64,13 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
     # Check for hidden and temp files
     for root, dirs, files in os.walk(path):
         # Filter ignored directories
-        dirs[:] = [d for d in dirs if not _should_ignore(d, config.ignore_patterns)]
+        dirs[:] = [d for d in dirs if not should_ignore(d, config.ignore_patterns)]
 
         for file in files:
             file_path = Path(root) / file
 
             # Skip ignored files
-            if _should_ignore(file, config.ignore_patterns):
+            if should_ignore(file, config.ignore_patterns):
                 continue
 
             # Check for hidden files (starting with .)
@@ -134,8 +134,8 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
                         )
                     )
             except OSError as exc:
-                if config.check_duplicate_files and not file_path.is_symlink():
-                    _report_duplicate_check_error(path, file_path, result, exc)
+                if not file_path.is_symlink():
+                    _report_read_error(path, file_path, result, f"Could not read file: {exc}")
 
             # Check for excessively long filenames
             # Most filesystems support 255 characters, but recommend shorter for compatibility
@@ -210,14 +210,6 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
     return result
 
 
-def _should_ignore(name: str, patterns: list) -> bool:
-    """Apply the validator's existing suffix and substring ignore rules."""
-    return any(
-        name.endswith(pattern[1:]) if pattern.startswith("*") else pattern in name
-        for pattern in patterns
-    )
-
-
 def _sha256_file(file_path: Path) -> str:
     digest = hashlib.sha256()
     with file_path.open("rb") as source:
@@ -231,15 +223,31 @@ def _sha256_prefix(file_path: Path) -> str:
         return hashlib.sha256(source.read(PREFIX_SIZE)).hexdigest()
 
 
-def _report_duplicate_check_error(path: Path, file_path: Path, result: CheckResult, exc: OSError) -> None:
+def _report_read_error(path: Path, file_path: Path, result: CheckResult, message: str) -> None:
     result.issues.append(
         ValidationIssue(
             severity=Severity.WARNING,
             category=CheckCategory.FILESYSTEM,
             file=file_path.relative_to(path).as_posix(),
-            message=f"Could not check file for duplicate content: {exc}",
+            message=message,
         )
     )
+
+
+def _report_duplicate_check_error(path: Path, file_path: Path, result: CheckResult, exc: OSError) -> None:
+    _report_read_error(path, file_path, result, f"Could not check file for duplicate content: {exc}")
+
+
+def _group_by_full_hash(path: Path, files: List[Path], result: CheckResult) -> Dict[str, List[Path]]:
+    files_by_hash: Dict[str, List[Path]] = {}
+    for file_path in files:
+        try:
+            digest = _sha256_file(file_path)
+        except OSError as exc:
+            _report_duplicate_check_error(path, file_path, result, exc)
+            continue
+        files_by_hash.setdefault(digest, []).append(file_path)
+    return files_by_hash
 
 
 def _check_duplicate_files(path: Path, files_by_size: Dict[int, List[Path]], result: CheckResult) -> None:
@@ -258,17 +266,14 @@ def _check_duplicate_files(path: Path, files_by_size: Dict[int, List[Path]], res
                 continue
             files_by_prefix.setdefault(prefix, []).append(file_path)
 
-        for prefix_matches in files_by_prefix.values():
+        for prefix, prefix_matches in files_by_prefix.items():
             if len(prefix_matches) < 2:
                 continue
-            files_by_hash: Dict[str, List[Path]] = {}
-            for file_path in prefix_matches:
-                try:
-                    digest = _sha256_file(file_path)
-                except OSError as exc:
-                    _report_duplicate_check_error(path, file_path, result, exc)
-                    continue
-                files_by_hash.setdefault(digest, []).append(file_path)
+            if size <= PREFIX_SIZE:
+                # The prefix is the whole file, so its hash is already the full hash.
+                files_by_hash = {prefix: prefix_matches}
+            else:
+                files_by_hash = _group_by_full_hash(path, prefix_matches, result)
 
             for digest, matches in files_by_hash.items():
                 first = matches[0].relative_to(path).as_posix()

@@ -7,7 +7,7 @@ from typing import Optional
 
 from tqdm import tqdm
 
-from physionet.validate.config import ValidationConfig
+from physionet.validate.config import ValidationConfig, should_ignore
 from physionet.validate.models import (
     ValidationResult,
     CheckResult,
@@ -123,12 +123,12 @@ def _calculate_stats(path: Path, config: ValidationConfig) -> DatasetStats:
 
     for root, dirs, files in os.walk(path):
         # Filter out ignored directories
-        dirs[:] = [d for d in dirs if not _should_ignore(d, config.ignore_patterns)]
+        dirs[:] = [d for d in dirs if not should_ignore(d, config.ignore_patterns)]
 
         stats.directory_count += len(dirs)
 
         for file in files:
-            if _should_ignore(file, config.ignore_patterns):
+            if should_ignore(file, config.ignore_patterns):
                 continue
 
             file_path = Path(root) / file
@@ -140,14 +140,3 @@ def _calculate_stats(path: Path, config: ValidationConfig) -> DatasetStats:
                 pass
 
     return stats
-
-
-def _should_ignore(name: str, patterns: list) -> bool:
-    """Check if a file or directory should be ignored."""
-    for pattern in patterns:
-        if pattern.startswith("*"):
-            if name.endswith(pattern[1:]):
-                return True
-        elif pattern in name:
-            return True
-    return False

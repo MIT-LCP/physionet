@@ -10,6 +10,7 @@ import pytest
 
 from physionet.validate import ValidationConfig, validate_dataset
 from physionet.validate.checks import check_filesystem
+from physionet.validate.checks.filesystem import PREFIX_SIZE
 from physionet.validate.models import CheckCategory, Severity
 
 
@@ -82,8 +83,9 @@ def test_python_config_can_skip_hashing(tmp_path):
 
 
 def test_unreadable_candidate_is_reported(tmp_path):
-    (tmp_path / "first.bin").write_bytes(b"content")
-    (tmp_path / "second.bin").write_bytes(b"content")
+    content = b"A" * (PREFIX_SIZE + 1)  # Larger than the prefix, so the full file is hashed.
+    (tmp_path / "first.bin").write_bytes(content)
+    (tmp_path / "second.bin").write_bytes(content)
 
     with patch("physionet.validate.checks.filesystem._sha256_file", side_effect=OSError("read denied")):
         result = check_filesystem(tmp_path, ValidationConfig())
@@ -92,6 +94,33 @@ def test_unreadable_candidate_is_reported(tmp_path):
     failures = [issue for issue in result.issues if "Could not check file for duplicate content" in issue.message]
     assert {issue.file for issue in failures} == {"first.bin", "second.bin"}
     assert all("read denied" in issue.message for issue in failures)
+
+
+def test_small_files_are_read_once(tmp_path):
+    (tmp_path / "first.bin").write_bytes(b"A" * PREFIX_SIZE)
+    (tmp_path / "second.bin").write_bytes(b"A" * PREFIX_SIZE)
+
+    with patch("physionet.validate.checks.filesystem._sha256_file") as hash_file:
+        result = check_filesystem(tmp_path, ValidationConfig())
+
+    hash_file.assert_not_called()
+    issues = duplicate_issues(result)
+    assert [issue.file for issue in issues] == ["second.bin"]
+    assert hashlib.sha256(b"A" * PREFIX_SIZE).hexdigest() in issues[0].message
+
+
+@pytest.mark.parametrize("check_duplicates", [True, False])
+def test_file_that_cannot_be_read_is_reported(tmp_path, check_duplicates):
+    (tmp_path / "tags.csv").write_bytes(b"")
+
+    with patch(
+        "physionet.validate.checks.filesystem.get_csv_layout", side_effect=PermissionError("access denied")
+    ):
+        result = check_filesystem(tmp_path, ValidationConfig(check_duplicate_files=check_duplicates))
+
+    assert [(issue.file, issue.message) for issue in result.issues] == [
+        ("tags.csv", "Could not read file: access denied")
+    ]
 
 
 def test_different_prefixes_avoid_full_file_hashing(tmp_path):
@@ -106,7 +135,7 @@ def test_different_prefixes_avoid_full_file_hashing(tmp_path):
 
 
 def test_matching_prefixes_are_checked_to_the_end(tmp_path):
-    prefix = b"A" * 65536
+    prefix = b"A" * PREFIX_SIZE
     (tmp_path / "first.bin").write_bytes(prefix + b"tail A")
     (tmp_path / "second.bin").write_bytes(prefix + b"tail B")
 
