@@ -1,6 +1,7 @@
 from physionet.api import PhysioNetClient
 from physionet.validate import validate_dataset, ValidationConfig, ValidationResult
 from physionet.download import download
+from physionet.data import fetch, load
 
 try:
     from importlib.metadata import version
@@ -14,4 +15,6 @@ __all__ = [
     "ValidationConfig",
     "ValidationResult",
     "download",
+    "fetch",
+    "load",
 ]

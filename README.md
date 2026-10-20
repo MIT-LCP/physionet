@@ -191,6 +191,50 @@ physionet validate /path/to/dataset --max-rows 5000
 
 ## Python API
 
+### Load a table
+
+`load()` reads a table from a dataset into a pandas DataFrame. The file is
+downloaded on first use and kept in a local cache, so later calls read it from
+disk.
+
+```python
+import physionet
+
+# The extension can be left out when only one table has that name
+patients = physionet.load("mimic-iv-demo", "hosp/patients", version="2.2")
+
+# Options are passed to pandas
+admissions = physionet.load(
+    "mimic-iv-demo", "hosp/admissions.csv.gz", version="2.2",
+    usecols=["subject_id", "admittime"], parse_dates=["admittime"],
+)
+
+# Any other file: get its path in the cache
+license_path = physionet.fetch("mimic-iv-demo", "LICENSE.txt", version="2.2")
+```
+
+Supported table formats are `.csv`, `.csv.gz`, `.tsv`, `.tsv.gz`, `.parquet`
+(needs `pyarrow`) and `.xlsx`. Restricted datasets use the same credentials as
+`download()`: `username` and `password` arguments, or the `PHYSIONET_USERNAME`
+and `PHYSIONET_PASSWORD` environment variables.
+
+**Pin the version** for reproducible analyses. With a version, a file that is
+already cached is read without contacting PhysioNet, so it works offline.
+Without one, the latest version is looked up online each time.
+
+**The cache** is at `~/.cache/physionet/physionet.org/<dataset>/<version>/`.
+Set `PHYSIONET_CACHE` (or pass `cache_dir=`) to use another folder. Delete the
+folder to clear the cache.
+
+- Files are only added after their SHA-256 checksum matches the dataset's
+  `SHA256SUMS.txt`. Cached files are not checked again unless you pass
+  `verify=True`, which re-checks the file and downloads it again if it changed.
+- Files fetched with credentials are saved readable only by you. Anyone who can
+  read the cache folder can read any other file in it, so a cache shared on a
+  cluster suits open datasets. Keep restricted data in your own cache.
+- Symbolic links inside the cache folder are refused. Only use a cache folder
+  that people you don't trust cannot write to.
+
 ### Download
 
 ```python

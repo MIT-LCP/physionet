@@ -252,9 +252,12 @@ def _select_source(
     version: str,
     source: str,
     username: Optional[str],
+    verbose: bool = True,
 ) -> Tuple[str, str]:
     """
     Select the download source and return (source_type, source_base).
+
+    With verbose=False, the choice is made without printing it.
 
     Returns:
         A tuple of (source_type, source_base) where source_type is "http" or "s3",
@@ -270,15 +273,18 @@ def _select_source(
     # Not all projects are mirrored to S3, so we probe with a HEAD request.
     s3_check_url = f"{S3_BASE_URL}/{slug}/{version}/SHA256SUMS.txt"
     try:
-        print("Checking AWS S3 availability...")
+        if verbose:
+            print("Checking AWS S3 availability...")
         resp = requests.head(s3_check_url, timeout=5)
         if resp.status_code == 200:
-            print("Found on S3. Using AWS S3.")
+            if verbose:
+                print("Found on S3. Using AWS S3.")
             return ("http", f"{S3_BASE_URL}/{slug}/{version}")
     except requests.RequestException:
         pass
 
-    print("Not available on S3. Using PhysioNet.")
+    if verbose:
+        print("Not available on S3. Using PhysioNet.")
     return ("http", f"{client.base_url}/files/{slug}/{version}")
 
 
