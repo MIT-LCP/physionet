@@ -1,6 +1,7 @@
 """Configuration for validation checks."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 MAX_LOOKBACK_YEARS = 1000
@@ -25,6 +26,11 @@ def should_ignore(name: str, patterns: List[str]) -> bool:
         name.endswith(pattern[1:]) if pattern.startswith("*") else pattern in name
         for pattern in patterns
     )
+
+
+def is_ignored_path(file_path: Path, root: Path, patterns: List[str]) -> bool:
+    """Apply should_ignore to each folder and file name below the dataset root."""
+    return any(should_ignore(part, patterns) for part in file_path.relative_to(root).parts)
 
 
 @dataclass
