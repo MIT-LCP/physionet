@@ -214,6 +214,7 @@ def _check_csv_privacy(
                 rows_scanned += 1
 
                 for raw_col, raw_value in row.items():
+                    # DictReader stores surplus CSV fields under a None key.
                     col = raw_col if raw_col is not None else "extra field"
                     values = raw_value if isinstance(raw_value, list) else [raw_value]
                     for value in values:
@@ -222,7 +223,6 @@ def _check_csv_privacy(
 
                         value_str = str(value).strip()
 
-                        # DictReader stores surplus CSV fields under a None key.
                         for pattern, pattern_name in pattern_info:
                             if (pattern_name == "phone number"
                                     and layout.ignore_unix_timestamps_as_phone_numbers

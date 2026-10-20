@@ -144,9 +144,10 @@ dataset directory.
 
 The validator recognizes the headerless CSV layout exported by Empatica E4
 Connect for ACC, BVP, EDA, and TEMP signals. In a matching E4 session, an empty
-`tags.csv` means no event markers and is reported as information; Unix event
-timestamps are not labeled as phone numbers. Other empty files and genuine
-phone-number patterns still receive warnings. Quality checks use `acc_x`,
+`tags.csv` means no event markers and is reported as information. Nine- or
+ten-digit Unix event timestamps are not labeled as phone numbers, even when
+shifted outside 2000–2100. Other empty files and genuine phone-number patterns
+still receive warnings. Quality checks use `acc_x`,
 `acc_y`, `acc_z`, `bvp`, `eda`, and `temp` as signal column names and skip the
 timestamp and sample-rate rows. This format check does not establish that
 timestamps have been de-identified; review them before sharing.

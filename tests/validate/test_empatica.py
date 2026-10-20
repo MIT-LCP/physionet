@@ -9,6 +9,7 @@ import pytest
 
 from physionet.validate import ValidationConfig, validate_dataset
 from physionet.validate.checks import check_filesystem, check_integrity, check_privacy, check_quality
+from physionet.validate.checks.csv_layout import is_unix_timestamp
 from physionet.validate.checks.empatica import is_e4_sensor_file
 from physionet.validate.models import Severity
 
@@ -20,6 +21,46 @@ def write_e4_sensor(directory):
     (directory / "EDA.csv").write_text(
         "1673588411.000000\n4.000000\n0.123456\n0.234567\n0.345678\n"
     )
+
+
+@pytest.mark.parametrize("timestamp", ["1673588411", "631152000", "5680281600"])
+@pytest.mark.parametrize("empty_tags", [True, False])
+def test_integer_and_shifted_e4_timestamps_validate_cleanly(tmp_path, timestamp, empty_tags):
+    (tmp_path / "ACC.csv").write_text(
+        f"{timestamp},{timestamp},{timestamp}\n"
+        "32,32,32\n"
+        "27,-25,50\n"
+    )
+    (tmp_path / "EDA.csv").write_text(
+        f"{timestamp}\n4\n0.123456\n0.234567\n"
+    )
+    (tmp_path / "tags.csv").write_text("" if empty_tags else f"{timestamp}.000000\n")
+
+    result = validate_dataset(
+        str(tmp_path), ValidationConfig(check_documentation=False), show_progress=False
+    )
+
+    assert result.total_errors == 0
+    assert result.total_warnings == 0
+    assert result.total_info == (1 if empty_tags else 0)
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        ("631152000", True),
+        ("5680281600.123456", True),
+        ("1673588411", True),
+        ("63115200", False),
+        ("56802816000", False),
+        ("-631152000", False),
+        ("000000000", False),
+        ("631152000.", False),
+        ("631152000.1e3", False),
+    ],
+)
+def test_unix_timestamp_shape(timestamp, expected):
+    assert is_unix_timestamp(timestamp) is expected
 
 
 def test_e4_headerless_sensor_files_do_not_trigger_csv_structure_errors(tmp_path):

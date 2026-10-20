@@ -28,10 +28,10 @@ class CsvLayout:
 
 
 def is_unix_timestamp(value: str) -> bool:
-    """Recognize ten-digit Unix seconds, optionally with a fractional part."""
+    """Recognize nine- or ten-digit Unix seconds, including shifted dates."""
     whole, separator, fraction = value.strip().partition(".")
-    if len(whole) != 10 or not whole.isdigit():
+    if len(whole) not in (9, 10) or not whole.isdigit() or whole[0] == "0":
         return False
     if separator and (not fraction or not fraction.isdigit()):
         return False
-    return 946684800 <= int(whole) < 4102444800
+    return True
