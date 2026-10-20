@@ -245,15 +245,21 @@ def _fetch(
     staging.mkdir(mode=0o700)
     partial = staging / target.name
     try:
-        source_type, source_base = _select_source(
-            remote.client, slug, version, source, remote.username, verbose=False
-        )
-        if source_type == "s3":
-            _download_file_s3(source_base, f"{slug}/{version}/{name}", partial, expected_hash)
-        else:
-            _download_file(
-                f"{source_base}/{name}", partial, expected_hash, remote.client.session, retries=retries
+        try:
+            source_type, source_base = _select_source(
+                remote.client, slug, version, source, remote.username, verbose=False
             )
+            if source_type == "s3":
+                _download_file_s3(source_base, f"{slug}/{version}/{name}", partial, expected_hash)
+            else:
+                _download_file(
+                    f"{source_base}/{name}", partial, expected_hash, remote.client.session, retries=retries
+                )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            raise ConnectionError(
+                f"Could not reach PhysioNet to download {name} from {slug} {version}, "
+                f"and it is not cached at {target}. ({type(exc).__name__})"
+            ) from None
         if remote.has_credentials:
             # Restricted data: only the owner may read it, even in a shared cache.
             os.chmod(partial, stat.S_IRUSR | stat.S_IWUSR)
@@ -271,8 +277,8 @@ def _latest_version(remote: _Remote, slug: str) -> str:
     except (requests.ConnectionError, requests.Timeout) as exc:
         raise ConnectionError(
             f"Could not reach PhysioNet to find the latest version of {slug}. "
-            "Pass version= to use files that are already cached."
-        ) from exc
+            f"Pass version= to use files that are already cached. ({type(exc).__name__})"
+        ) from None
 
 
 def _manifest(remote: _Remote, cache: Path, origin: str, slug: str, version: str) -> Dict[str, str]:
@@ -284,6 +290,12 @@ def _manifest(remote: _Remote, cache: Path, origin: str, slug: str, version: str
     else:
         try:
             entries = _get_file_manifest(remote.client, slug, version)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            raise ConnectionError(
+                f"Could not reach PhysioNet to get the file list for {slug} {version}, and it is "
+                f"not cached in {cache}. Load the file once while online, or check the cache folder. "
+                f"({type(exc).__name__})"
+            ) from None
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
             if status == 404:

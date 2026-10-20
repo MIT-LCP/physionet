@@ -214,17 +214,25 @@ license_path = physionet.fetch("mimic-iv-demo", "LICENSE.txt", version="2.2")
 ```
 
 Supported table formats are `.csv`, `.csv.gz`, `.tsv`, `.tsv.gz`, `.parquet`
-(needs `pyarrow`) and `.xlsx`. Restricted datasets use the same credentials as
-`download()`: `username` and `password` arguments, or the `PHYSIONET_USERNAME`
-and `PHYSIONET_PASSWORD` environment variables.
+(needs `pyarrow`) and `.xlsx`. For other files, such as WFDB records or PDFs,
+use `fetch()` and open the returned path yourself.
 
-**Pin the version** for reproducible analyses. With a version, a file that is
-already cached is read without contacting PhysioNet, so it works offline.
-Without one, the latest version is looked up online each time.
+Restricted datasets use the same credentials as `download()`: `username` and
+`password` arguments, or the `PHYSIONET_USERNAME` and `PHYSIONET_PASSWORD`
+environment variables. As with `download()`, `source="auto"` (the default)
+uses the AWS open data mirror when a dataset is on it, and PhysioNet otherwise;
+`source="physionet"` or `source="aws"` picks one.
+
+**Pin the version** for reproducible analyses. With a version, a file that has
+been loaded once is read from the cache without contacting PhysioNet, so it
+works offline. Without one, the latest version is looked up online each time.
+Load each file once while online before relying on it offline.
 
 **The cache** is at `~/.cache/physionet/physionet.org/<dataset>/<version>/`.
-Set `PHYSIONET_CACHE` (or pass `cache_dir=`) to use another folder. Delete the
-folder to clear the cache.
+Set `PHYSIONET_CACHE` (or pass `cache_dir=`) to use another folder; if neither
+is set, `$XDG_CACHE_HOME/physionet` is used when `XDG_CACHE_HOME` is set.
+Files from a different `base_url` are kept in a folder named after that
+server. Delete the cache folder to clear it.
 
 - Files are only added after their SHA-256 checksum matches the dataset's
   `SHA256SUMS.txt`. Cached files are not checked again unless you pass
@@ -234,6 +242,16 @@ folder to clear the cache.
   cluster suits open datasets. Keep restricted data in your own cache.
 - Symbolic links inside the cache folder are refused. Only use a cache folder
   that people you don't trust cannot write to.
+
+**Errors** from `load()` and `fetch()`:
+
+| Error | When |
+|-------|------|
+| `FileNotFoundError` | The dataset version has no such file. The message suggests close matches. |
+| `NotFoundError` | The dataset or version does not exist. |
+| `ForbiddenError` | Your account cannot access the dataset, or no credentials were given. |
+| `ConnectionError` | PhysioNet cannot be reached and the file is not cached yet, or no version was given while offline. |
+| `ValueError` | The file is not a supported table format (use `fetch()`), or a name without an extension matches more than one table. |
 
 ### Download
 
@@ -387,6 +405,22 @@ except RateLimitError:
     print("Rate limit exceeded, please wait before retrying")
 except ForbiddenError:
     print("Access denied - check credentials or project permissions")
+```
+
+`physionet.load()` and `physionet.fetch()` raise the same `NotFoundError` and
+`ForbiddenError`, plus the built-in errors listed under
+[Load a table](#load-a-table):
+
+```python
+import physionet
+from physionet.api.exceptions import ForbiddenError
+
+try:
+    patients = physionet.load("mimiciv", "hosp/patients", version="3.1")
+except ForbiddenError:
+    print("Set PHYSIONET_USERNAME and PHYSIONET_PASSWORD for an account with access")
+except ConnectionError:
+    print("Offline, and this file is not cached yet")
 ```
 
 ## Contributing

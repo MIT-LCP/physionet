@@ -287,3 +287,24 @@ def test_cache_folder_itself_may_be_a_symlink(tmp_path, monkeypatch):
         fetch("demo", "docs/notes.txt", "1.0", source="physionet")
 
     assert (real / "physionet.org" / "demo" / "1.0" / "docs" / "notes.txt").exists()
+
+
+def test_offline_with_nothing_cached_gives_a_clear_error(cache):
+    with rm.Mocker() as mocker:
+        mocker.get(f"{FILES}/SHA256SUMS.txt", exc=requests.exceptions.ProxyError)
+        with pytest.raises(ConnectionError, match=r"file list for demo 1\.0.*not cached in"):
+            load("demo", "hosp/patients", "1.0", source="physionet")
+
+
+def test_offline_download_gives_a_clear_error_and_leaves_no_partial_files(cache):
+    with rm.Mocker() as mocker:
+        mock_project(mocker)
+        fetch("demo", "docs/notes.txt", "1.0", source="physionet")  # Caches the file list.
+
+    with rm.Mocker() as mocker:
+        mocker.get(f"{FILES}/hosp/patients.csv.gz", exc=requests.ConnectionError)
+        with pytest.raises(ConnectionError, match=r"download hosp/patients\.csv\.gz from demo 1\.0"):
+            load("demo", "hosp/patients", "1.0", source="physionet", retries=0)
+
+    hosp = cache / "physionet.org" / "demo" / "1.0" / "hosp"
+    assert list(hosp.iterdir()) == []
