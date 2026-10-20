@@ -5,10 +5,10 @@ from pathlib import Path
 
 
 _SENSOR_LAYOUTS = {
-    "ACC.csv": (3, 32),
-    "BVP.csv": (1, 64),
-    "EDA.csv": (1, 4),
-    "TEMP.csv": (1, 4),
+    "ACC.csv": (("acc_x", "acc_y", "acc_z"), 32),
+    "BVP.csv": (("bvp",), 64),
+    "EDA.csv": (("eda",), 4),
+    "TEMP.csv": (("temp",), 4),
 }
 
 
@@ -28,7 +28,8 @@ def is_e4_sensor_file(file_path: Path) -> bool:
     if not layout or not file_path.is_file():
         return False
 
-    channels, sample_rate = layout
+    columns, sample_rate = layout
+    channels = len(columns)
     try:
         with file_path.open(newline="", encoding="utf-8") as stream:
             reader = csv.reader(stream)
@@ -46,6 +47,13 @@ def is_e4_sensor_file(file_path: Path) -> bool:
         )
     except ValueError:
         return False
+
+
+def e4_sensor_columns(file_path: Path):
+    """Return positional channel names for a recognized E4 sensor file."""
+    if is_e4_sensor_file(file_path):
+        return _SENSOR_LAYOUTS[file_path.name][0]
+    return None
 
 
 def is_e4_tags_file(file_path: Path) -> bool:
