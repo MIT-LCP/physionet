@@ -29,6 +29,7 @@ class ValidationConfig:
     # File system settings
     max_file_size_bytes: Optional[int] = None  # None = no limit
     warn_small_files_threshold: int = 100  # Warn if more than this many small files
+    check_duplicate_files: bool = True
     ignore_patterns: List[str] = field(default_factory=lambda: [
         ".git", ".gitignore", ".DS_Store", "__pycache__", "*.pyc", ".pytest_cache"
     ])

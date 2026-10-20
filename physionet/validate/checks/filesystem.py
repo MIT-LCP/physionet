@@ -1,7 +1,9 @@
 """File system validation checks."""
 
+import hashlib
 import os
 from pathlib import Path
+from typing import Dict, List
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
@@ -21,6 +23,9 @@ PROPRIETARY_FORMATS = {
     '.pptx': 'PowerPoint format; consider .pdf instead',
 }
 
+HASH_CHUNK_SIZE = 1024 * 1024
+PREFIX_SIZE = 64 * 1024
+
 
 def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
     """
@@ -31,6 +36,7 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
     - Presence of version control artifacts
     - File sizes
     - Small file count
+    - Byte-identical files
 
     Args:
         path: Path to dataset directory
@@ -40,6 +46,7 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
         CheckResult with any filesystem issues found
     """
     result = CheckResult(category=CheckCategory.FILESYSTEM)
+    files_by_size: Dict[int, List[Path]] = {}
 
     # Check for version control artifacts
     for pattern in [".git", ".svn", ".hg", "__pycache__", ".pytest_cache"]:
@@ -57,13 +64,13 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
     # Check for hidden and temp files
     for root, dirs, files in os.walk(path):
         # Filter ignored directories
-        dirs[:] = [d for d in dirs if not any(p in d for p in config.ignore_patterns)]
+        dirs[:] = [d for d in dirs if not _should_ignore(d, config.ignore_patterns)]
 
         for file in files:
             file_path = Path(root) / file
 
             # Skip ignored files
-            if any(p in file for p in config.ignore_patterns):
+            if _should_ignore(file, config.ignore_patterns):
                 continue
 
             # Check for hidden files (starting with .)
@@ -93,6 +100,8 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
             # Check file size
             try:
                 size = file_path.stat().st_size
+                if config.check_duplicate_files and size > 0 and not file_path.is_symlink() and file_path.is_file():
+                    files_by_size.setdefault(size, []).append(file_path)
                 if size == 0:
                     layout = get_csv_layout(file_path)
                     if layout.allow_empty:
@@ -124,8 +133,9 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
                             suggestion="Consider splitting or compressing large files",
                         )
                     )
-            except (OSError, PermissionError):
-                pass
+            except OSError as exc:
+                if config.check_duplicate_files and not file_path.is_symlink():
+                    _report_duplicate_check_error(path, file_path, result, exc)
 
             # Check for excessively long filenames
             # Most filesystems support 255 characters, but recommend shorter for compatibility
@@ -194,7 +204,85 @@ def check_filesystem(path: Path, config: ValidationConfig) -> CheckResult:
                     )
                 )
 
+    if config.check_duplicate_files:
+        _check_duplicate_files(path, files_by_size, result)
+
     return result
+
+
+def _should_ignore(name: str, patterns: list) -> bool:
+    """Apply the validator's existing suffix and substring ignore rules."""
+    return any(
+        name.endswith(pattern[1:]) if pattern.startswith("*") else pattern in name
+        for pattern in patterns
+    )
+
+
+def _sha256_file(file_path: Path) -> str:
+    digest = hashlib.sha256()
+    with file_path.open("rb") as source:
+        for chunk in iter(lambda: source.read(HASH_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_prefix(file_path: Path) -> str:
+    with file_path.open("rb") as source:
+        return hashlib.sha256(source.read(PREFIX_SIZE)).hexdigest()
+
+
+def _report_duplicate_check_error(path: Path, file_path: Path, result: CheckResult, exc: OSError) -> None:
+    result.issues.append(
+        ValidationIssue(
+            severity=Severity.WARNING,
+            category=CheckCategory.FILESYSTEM,
+            file=file_path.relative_to(path).as_posix(),
+            message=f"Could not check file for duplicate content: {exc}",
+        )
+    )
+
+
+def _check_duplicate_files(path: Path, files_by_size: Dict[int, List[Path]], result: CheckResult) -> None:
+    """Compare size, then a prefix, then full SHA-256 before reporting duplicates."""
+    for size in sorted(files_by_size):
+        candidates = files_by_size[size]
+        if len(candidates) < 2:
+            continue
+
+        files_by_prefix: Dict[str, List[Path]] = {}
+        for file_path in sorted(candidates, key=lambda item: item.relative_to(path).as_posix()):
+            try:
+                prefix = _sha256_prefix(file_path)
+            except OSError as exc:
+                _report_duplicate_check_error(path, file_path, result, exc)
+                continue
+            files_by_prefix.setdefault(prefix, []).append(file_path)
+
+        for prefix_matches in files_by_prefix.values():
+            if len(prefix_matches) < 2:
+                continue
+            files_by_hash: Dict[str, List[Path]] = {}
+            for file_path in prefix_matches:
+                try:
+                    digest = _sha256_file(file_path)
+                except OSError as exc:
+                    _report_duplicate_check_error(path, file_path, result, exc)
+                    continue
+                files_by_hash.setdefault(digest, []).append(file_path)
+
+            for digest, matches in files_by_hash.items():
+                first = matches[0].relative_to(path).as_posix()
+                for duplicate in matches[1:]:
+                    result.issues.append(
+                        ValidationIssue(
+                            severity=Severity.WARNING,
+                            category=CheckCategory.FILESYSTEM,
+                            file=duplicate.relative_to(path).as_posix(),
+                            message=f"Identical content to {first} (SHA-256: {digest})",
+                            suggestion="Remove accidental copies or document why both files are needed",
+                            code="duplicate-file",
+                        )
+                    )
 
 
 def _format_size(size_bytes: int) -> str:
