@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
-from physionet.validate.config import ValidationConfig
+from physionet.validate.config import ValidationConfig, is_ignored_path
 from physionet.validate.checks.csv_formats import find_files_by_suffix, get_csv_layout
 
 
@@ -33,7 +33,7 @@ def check_quality(path: Path, config: ValidationConfig, progress_callback: Optio
         if progress_callback:
             progress_callback(f"Checking {csv_file.name} ({i+1}/{len(csv_files)} CSV files)")
 
-        if any(p in str(csv_file) for p in config.ignore_patterns):
+        if is_ignored_path(csv_file, path, config.ignore_patterns):
             continue
 
         _check_csv_quality(csv_file, path, config, result)

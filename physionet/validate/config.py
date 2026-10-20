@@ -1,6 +1,7 @@
 """Configuration for validation checks."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 MAX_LOOKBACK_YEARS = 1000
@@ -13,6 +14,23 @@ def validate_lookback_years(value) -> None:
             f"date_lookback_years must be a whole number from 1 to {MAX_LOOKBACK_YEARS}, "
             f"or None to turn the date check off (got {value!r})"
         )
+
+
+def should_ignore(name: str, patterns: List[str]) -> bool:
+    """Match a file or directory name against ignore patterns.
+
+    A pattern starting with "*" matches a name ending with the rest of it;
+    any other pattern matches when it appears anywhere in the name.
+    """
+    return any(
+        name.endswith(pattern[1:]) if pattern.startswith("*") else pattern in name
+        for pattern in patterns
+    )
+
+
+def is_ignored_path(file_path: Path, root: Path, patterns: List[str]) -> bool:
+    """Apply should_ignore to each folder and file name below the dataset root."""
+    return any(should_ignore(part, patterns) for part in file_path.relative_to(root).parts)
 
 
 @dataclass
@@ -29,6 +47,7 @@ class ValidationConfig:
     # File system settings
     max_file_size_bytes: Optional[int] = None  # None = no limit
     warn_small_files_threshold: int = 100  # Warn if more than this many small files
+    check_duplicate_files: bool = True
     ignore_patterns: List[str] = field(default_factory=lambda: [
         ".git", ".gitignore", ".DS_Store", "__pycache__", "*.pyc", ".pytest_cache"
     ])

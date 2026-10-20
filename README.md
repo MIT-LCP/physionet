@@ -130,12 +130,13 @@ dataset directory.
 | `--level {error,warning,info}` | Minimum severity level to display. Default: `info`. |
 | `--no-sampling` | Disable row sampling for large CSV files. Scans all rows (slower but more thorough). |
 | `--max-rows N` | Maximum number of rows to scan per CSV file. Default: 10000. Only applies when sampling is enabled. |
+| `--no-duplicate-check` | Skip checking files for identical content. Useful when hashing large datasets would take too long. |
 
 **Check categories:**
 
 - **filesystem** - File naming issues (spaces, special characters, long names),
   proprietary formats (suggests open alternatives), hidden files, version
-  control artifacts.
+  control artifacts, and byte-identical files.
 - **documentation** - Missing or incomplete documentation (e.g. `README.md`).
 - **integrity** - CSV structure, encoding, and duplicate column detection.
 - **quality** - Missing values, outliers, and data type consistency.
@@ -154,6 +155,15 @@ warnings for the first 10 files; the saved report lists every file.
 CSV exports from the Empatica E4 wearable are recognized, so their headerless
 layout, empty `tags.csv` files, and Unix timestamps don't produce false errors
 or phone-number warnings. Their timestamps are checked as dates.
+
+The filesystem check warns about non-empty files with identical bytes, even if
+they have different names or are in different folders. Each warning names the
+duplicate file, the first matching path, and its SHA-256 checksum. Identical
+files may be intentional; review them before removing anything. The validator
+compares file sizes and a small prefix before hashing matching candidates in
+chunks, and skips symbolic links, empty files, and ignored paths. Hashing large
+matching files can take time; use `--no-duplicate-check` or
+`ValidationConfig(check_duplicate_files=False)` to skip this check.
 
 **Examples:**
 

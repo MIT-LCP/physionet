@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
-from physionet.validate.config import ValidationConfig
+from physionet.validate.config import ValidationConfig, is_ignored_path, should_ignore
 from physionet.validate.checks.csv_formats import find_files_by_suffix, get_csv_layout
 from physionet.validate.checks.csv_layout import is_unix_timestamp
 from physionet.validate.checks.dates import (
@@ -98,7 +98,7 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
         if progress_callback:
             progress_callback(f"Checking {csv_file.name} ({i+1}/{len(csv_files)} CSV files)")
 
-        if any(p in str(csv_file) for p in config.ignore_patterns):
+        if is_ignored_path(csv_file, path, config.ignore_patterns):
             continue
 
         _check_csv_privacy(csv_file, path, config, pattern_info, result, date_finder, date_findings)
@@ -109,7 +109,7 @@ def check_privacy(path: Path, config: ValidationConfig, progress_callback: Optio
         if progress_callback:
             progress_callback(f"Checking {text_file.name} ({i+1}/{len(text_files)} text files)")
 
-        if any(p in str(text_file) for p in config.ignore_patterns):
+        if is_ignored_path(text_file, path, config.ignore_patterns):
             continue
 
         _check_text_file_privacy(
@@ -154,14 +154,14 @@ def _check_sensitive_files(path: Path, config: ValidationConfig, result: CheckRe
     """Check for sensitive configuration files that shouldn't be in the dataset."""
     for root, dirs, files in os.walk(path):
         # Filter out ignored directories
-        dirs[:] = [d for d in dirs if not any(p in d for p in config.ignore_patterns)]
+        dirs[:] = [d for d in dirs if not should_ignore(d, config.ignore_patterns)]
 
         for file in files:
             file_path = Path(root) / file
             relative_path = str(file_path.relative_to(path))
 
             # Skip ignored files
-            if any(p in str(file_path) for p in config.ignore_patterns):
+            if should_ignore(file, config.ignore_patterns):
                 continue
 
             # Check exact filename matches

@@ -121,6 +121,11 @@ def main():
         metavar="N",
         help="Maximum rows to scan per CSV file (default: 10000)",
     )
+    validate_parser.add_argument(
+        "--no-duplicate-check",
+        action="store_true",
+        help="Skip hashing same-size files to check for duplicate content",
+    )
 
     args = parser.parse_args()
 
@@ -259,6 +264,8 @@ def _handle_validate(args):
         config.sample_large_files = False
     if args.max_rows:
         config.max_rows_to_scan = args.max_rows
+    if args.no_duplicate_check:
+        config.check_duplicate_files = False
 
     # Run validation
     try:
