@@ -1,6 +1,5 @@
 """Privacy and PHI validation checks."""
 
-import csv
 import os
 import re
 from pathlib import Path
@@ -8,7 +7,8 @@ from typing import Optional, Callable
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
-from physionet.validate.checks.empatica import is_e4_tags_file, is_unix_timestamp
+from physionet.validate.checks.csv_formats import get_csv_layout
+from physionet.validate.checks.csv_layout import is_unix_timestamp
 
 # Pattern names for better error messages
 PHI_PATTERN_NAMES = {
@@ -175,11 +175,11 @@ def _check_csv_privacy(
     # Report each pattern at most once per column, including malformed extra fields.
     phi_columns = {}  # {column: set of pattern names}
     age_columns = set()  # Columns with age violations
-    e4_tags = is_e4_tags_file(csv_file)
+    layout = get_csv_layout(csv_file)
 
     try:
         with open(csv_file, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f, fieldnames=["event_time"] if e4_tags else None)
+            reader = layout.dict_reader(f)
 
             # Determine if we should sample this file
             rows_scanned = 0
@@ -224,7 +224,9 @@ def _check_csv_privacy(
 
                         # DictReader stores surplus CSV fields under a None key.
                         for pattern, pattern_name in pattern_info:
-                            if e4_tags and pattern_name == "phone number" and is_unix_timestamp(value_str):
+                            if (pattern_name == "phone number"
+                                    and layout.ignore_unix_timestamps_as_phone_numbers
+                                    and is_unix_timestamp(value_str)):
                                 continue
                             if pattern.search(value_str):
                                 phi_columns.setdefault(col, set()).add(pattern_name)

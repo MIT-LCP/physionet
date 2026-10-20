@@ -1,12 +1,11 @@
 """Data quality validation checks."""
 
-import csv
 from pathlib import Path
 from typing import Optional, Callable
 
 from physionet.validate.models import CheckResult, ValidationIssue, CheckCategory, Severity
 from physionet.validate.config import ValidationConfig
-from physionet.validate.checks.empatica import e4_sensor_columns
+from physionet.validate.checks.csv_formats import get_csv_layout
 
 
 def check_quality(path: Path, config: ValidationConfig, progress_callback: Optional[Callable[[str], None]] = None) -> CheckResult:
@@ -45,14 +44,10 @@ def check_quality(path: Path, config: ValidationConfig, progress_callback: Optio
 def _check_csv_quality(csv_file: Path, base_path: Path, config: ValidationConfig, result: CheckResult) -> None:
     """Check quality metrics for a CSV file."""
     try:
-        e4_columns = e4_sensor_columns(csv_file)
+        layout = get_csv_layout(csv_file)
         with open(csv_file, "r", encoding="utf-8") as f:
-            if e4_columns:
-                reader = _e4_sensor_rows(f, e4_columns)
-                columns = e4_columns
-            else:
-                reader = csv.DictReader(f)
-                columns = reader.fieldnames or []
+            reader = layout.dict_reader(f)
+            columns = reader.fieldnames or []
 
             # Track column statistics
             column_stats = {col: {"total": 0, "missing": 0, "values": []} for col in columns}
@@ -85,6 +80,8 @@ def _check_csv_quality(csv_file: Path, base_path: Path, config: ValidationConfig
                 rows_scanned += 1
 
                 for col, value in row.items():
+                    if col not in column_stats:
+                        continue  # Integrity reports surplus fields in malformed rows.
                     column_stats[col]["total"] += 1
 
                     # Check for missing values
@@ -146,13 +143,3 @@ def _check_csv_quality(csv_file: Path, base_path: Path, config: ValidationConfig
                 message=f"Could not perform quality checks: {str(e)}",
             )
         )
-
-
-def _e4_sensor_rows(stream, columns):
-    """Yield data rows under distinct channel names, skipping E4 metadata."""
-    reader = csv.reader(stream)
-    next(reader)  # Unix start time
-    next(reader)  # Sampling frequency
-    for values in reader:
-        yield {column: values[index] if index < len(values) else None
-               for index, column in enumerate(columns)}

@@ -2,6 +2,9 @@
 
 import csv
 from pathlib import Path
+from typing import Optional, Tuple
+
+from physionet.validate.checks.csv_layout import CsvLayout, is_unix_timestamp
 
 
 _SENSOR_LAYOUTS = {
@@ -10,16 +13,6 @@ _SENSOR_LAYOUTS = {
     "EDA.csv": (("eda",), 4),
     "TEMP.csv": (("temp",), 4),
 }
-
-
-def is_unix_timestamp(value: str) -> bool:
-    """Recognize ten-digit Unix seconds, optionally with a fractional part."""
-    whole, separator, fraction = value.strip().partition(".")
-    if len(whole) != 10 or not whole.isdigit():
-        return False
-    if separator and (not fraction or not fraction.isdigit()):
-        return False
-    return 946684800 <= int(whole) < 4102444800
 
 
 def is_e4_sensor_file(file_path: Path) -> bool:
@@ -49,7 +42,7 @@ def is_e4_sensor_file(file_path: Path) -> bool:
         return False
 
 
-def e4_sensor_columns(file_path: Path):
+def e4_sensor_columns(file_path: Path) -> Optional[Tuple[str, ...]]:
     """Return positional channel names for a recognized E4 sensor file."""
     if is_e4_sensor_file(file_path):
         return _SENSOR_LAYOUTS[file_path.name][0]
@@ -61,3 +54,18 @@ def is_e4_tags_file(file_path: Path) -> bool:
     return file_path.name.lower() == "tags.csv" and any(
         is_e4_sensor_file(file_path.parent / name) for name in _SENSOR_LAYOUTS
     )
+
+
+def get_e4_csv_layout(file_path: Path) -> Optional[CsvLayout]:
+    """Describe recognized E4 sensor and event-tag files for CSV checks."""
+    columns = e4_sensor_columns(file_path)
+    if columns is not None:
+        return CsvLayout(columns=columns, metadata_rows=2)
+    if is_e4_tags_file(file_path):
+        return CsvLayout(
+            columns=("event_time",),
+            allow_empty=True,
+            empty_message="No Empatica E4 event markers recorded (empty tags.csv)",
+            ignore_unix_timestamps_as_phone_numbers=True,
+        )
+    return None

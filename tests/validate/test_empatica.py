@@ -65,8 +65,20 @@ def test_e4_sensor_still_reports_malformed_rows(tmp_path):
         stream.write("1,2\n")
 
     result = check_integrity(tmp_path, ValidationConfig())
+    quality = check_quality(tmp_path, ValidationConfig())
 
     assert any(issue.file == "EDA.csv" and "2 columns, expected 1" in issue.message
+               for issue in result.issues)
+    assert not any("Could not perform quality checks" in issue.message
+                   for issue in quality.issues)
+
+
+def test_e4_sensor_with_metadata_but_no_samples_warns(tmp_path):
+    (tmp_path / "EDA.csv").write_text("1673588411\n4\n")
+
+    result = check_integrity(tmp_path, ValidationConfig())
+
+    assert any(issue.file == "EDA.csv" and "no data" in issue.message
                for issue in result.issues)
 
 

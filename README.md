@@ -155,6 +155,12 @@ A small [synthetic E4 session](tests/fixtures/e4_session) in the test fixtures
 shows the expected ACC, BVP, EDA, TEMP, and tags CSV layouts. Its values are
 invented and contain no participant data.
 
+For contributors adding another CSV export format, a detector in
+[`csv_formats.py`](physionet/validate/checks/csv_formats.py) can return a
+`CsvLayout` describing its columns, metadata rows, and empty-file behavior.
+The integrity, quality, privacy, and filesystem checks use that shared layout;
+ordinary headered CSV remains the default.
+
 **Examples:**
 
 ```bash
