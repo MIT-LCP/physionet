@@ -51,16 +51,18 @@ homepage = "https://github.com/MIT-LCP/physionet"
 repository = "https://github.com/MIT-LCP/physionet"
 
 [tool.hatch.build.targets.sdist]
+# Allow-list: only these paths go into the source package. Anything else in
+# the working folder (local data, notes, editor settings) is left out, even
+# if it is not git-ignored.
+only-include = [
+    "physionet",
+    "tests",
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+    "requirements.txt",
+]
 exclude = [
-    "venv/",
-    "env/",
-    ".venv/",
-    "*.egg-info/",
-    "dist/",
-    "build/",
-    ".pytest_cache/",
-    ".git/",
-    ".github/",
     "__pycache__/",
     "*.pyc",
     ".DS_Store",
