@@ -1,4 +1,19 @@
-"""Recognize the headerless CSV layout exported by Empatica E4 Connect."""
+"""Recognize the headerless CSV layout exported by Empatica E4 Connect.
+
+Format: https://www.empatica.com/blog/decoding-wearable-sensor-signals-what-to-expect-from-your-e4-data/
+
+- ACC, BVP, EDA, HR, TEMP: a row of Unix start times, a row of sample rates,
+  then samples. Data columns are named acc_x/acc_y/acc_z, bvp, eda, hr, temp,
+  which is what ValidationConfig.value_ranges keys should use.
+- IBI: a "<start time>, IBI" row, then time_offset,ibi rows. A file with only
+  the first row means no beats were detected and is reported as information.
+- tags: one event time per row, no header; empty means no events. It is only
+  treated as E4 when a recognized sensor or IBI file sits beside it, and only
+  its event_time column is exempt from the phone-number pattern.
+
+File names are matched in any letter case. tests/fixtures/e4_session holds a
+small synthetic example.
+"""
 
 import csv
 from pathlib import Path

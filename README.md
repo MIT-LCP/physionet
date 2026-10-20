@@ -142,27 +142,9 @@ dataset directory.
 - **privacy** - PHI patterns (SSN, email, phone numbers), date patterns, and
   sensitive file detection.
 
-The validator recognizes the headerless CSV layout exported by Empatica E4
-Connect for ACC, BVP, EDA, HR, IBI, and TEMP files (file names are matched
-in any letter case). In a matching E4 session, an empty
-`tags.csv` means no event markers, and an `IBI.csv` with only its start-time
-row means no detected beats; both are reported as information. Nine- or
-ten-digit Unix event timestamps are not labeled as phone numbers, even when
-shifted outside 2000–2100. Other empty files and genuine phone-number patterns
-still receive warnings. Quality checks use `acc_x`,
-`acc_y`, `acc_z`, `bvp`, `eda`, `hr`, and `temp` as signal column names and skip the
-timestamp and sample-rate rows; IBI.csv uses `time_offset` and `ibi`. This format check does not establish that
-timestamps have been de-identified; review them before sharing.
-See [Empatica's E4 data format](https://www.empatica.com/blog/decoding-wearable-sensor-signals-what-to-expect-from-your-e4-data/).
-A small [synthetic E4 session](tests/fixtures/e4_session) in the test fixtures
-shows the expected ACC, BVP, EDA, HR, IBI, TEMP, and tags CSV layouts. Its values are
-invented and contain no participant data.
-
-For contributors adding another CSV export format, a detector in
-[`csv_formats.py`](physionet/validate/checks/csv_formats.py) can return a
-`CsvLayout` describing its columns, metadata rows, and empty-file behavior.
-The integrity, quality, privacy, and filesystem checks use that shared layout;
-ordinary headered CSV remains the default.
+CSV exports from the Empatica E4 wearable are recognized, so their headerless
+layout, empty `tags.csv` files, and Unix timestamps don't produce false errors
+or privacy warnings. This doesn't check that timestamps are de-identified.
 
 **Examples:**
 
