@@ -521,6 +521,28 @@ class TestDownload:
         assert "Authorization" not in requests_by_url[f"{S3_BASE_URL}/demo/1.0/data.csv"].headers
         assert (tmp_path / "demo-1.0" / "data.csv").read_bytes() == file_content
 
+    def test_physionet_source_sends_credentials_for_manifest_and_file(self, tmp_path):
+        file_content = b"protected data"
+        manifest = self._make_manifest([("data.csv", file_content)])
+        versions_response = [
+            {"slug": "restricted", "title": "Restricted", "version": "1.0", "abstract": "", "citation": ""}
+        ]
+        with rm.Mocker() as mock:
+            mock.get("https://physionet.org/api/v1/projects/restricted/versions/", json=versions_response)
+            mock.get("https://physionet.org/files/restricted/1.0/SHA256SUMS.txt", text=manifest)
+            mock.get("https://physionet.org/files/restricted/1.0/data.csv", content=file_content)
+            download(
+                "restricted", version="1.0", output_dir=str(tmp_path), source="physionet",
+                username="researcher", password="secret",
+            )
+
+        file_requests = [request for request in mock.request_history if "/files/" in request.url]
+        assert len(file_requests) == 2
+        for request in file_requests:
+            assert request.headers["User-Agent"].startswith("PhysioNet-Python-Client/")
+            assert request.headers["Authorization"].startswith("Basic ")
+        assert (tmp_path / "restricted-1.0" / "data.csv").read_bytes() == file_content
+
     def test_download_not_found(self, tmp_path):
         with rm.Mocker() as m:
             m.get("https://physionet.org/api/v1/projects/nonexistent/versions/", status_code=404, json={"error": "Not found"})
@@ -552,6 +574,17 @@ class TestDownload:
         assert exc_info.value.failures[0][0] == "data.csv"
         assert isinstance(exc_info.value.failures[0][1], ForbiddenError)
         assert not (tmp_path / "restricted-1.0" / "data.csv").exists()
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_manifest_access_denied_explains_requirements(self, tmp_path, status):
+        versions_response = [
+            {"slug": "restricted", "title": "Restricted", "version": "1.0", "abstract": "", "citation": ""}
+        ]
+        with rm.Mocker() as mock:
+            mock.get("https://physionet.org/api/v1/projects/restricted/versions/", json=versions_response)
+            mock.get("https://physionet.org/files/restricted/1.0/SHA256SUMS.txt", status_code=status)
+            with pytest.raises(ForbiddenError, match="access requirements"):
+                download("restricted", version="1.0", output_dir=str(tmp_path), source="physionet")
 
     def test_download_reports_partial_failure_and_preserves_successes(self, tmp_path):
         good_content = b"good data"

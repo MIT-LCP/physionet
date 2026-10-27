@@ -1,7 +1,9 @@
 """Command-line interface for physionet package."""
 
 import argparse
+import getpass
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -198,6 +200,15 @@ def _handle_download(args):
     from physionet.api.exceptions import ForbiddenError, NotFoundError
 
     try:
+        password = args.password or os.getenv("PHYSIONET_PASSWORD")
+        if args.username and not password:
+            if not sys.stdin.isatty():
+                print(
+                    "PhysioNet password required: set PHYSIONET_PASSWORD for unattended downloads.",
+                    file=sys.stderr,
+                )
+                return 1
+            password = getpass.getpass("PhysioNet password: ")
         download(
             slug=args.slug,
             version=args.version,
@@ -207,7 +218,7 @@ def _handle_download(args):
             source=args.source,
             dry_run=args.dry_run,
             username=args.username,
-            password=args.password,
+            password=password,
         )
         return 0
     except DownloadError as e:

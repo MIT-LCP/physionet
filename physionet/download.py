@@ -83,7 +83,15 @@ def download(
         version = _resolve_version(client, slug, version)
 
         # Get file manifest
-        files = _get_file_manifest(client, slug, version)
+        try:
+            files = _get_file_manifest(client, slug, version)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code in (401, 403):
+                raise ForbiddenError(
+                    f"Cannot access {slug} v{version} files. Check your PhysioNet credentials "
+                    "and the project's access requirements."
+                ) from exc
+            raise
 
         # Filter files
         files = _filter_files(files, include=include, exclude=exclude)
