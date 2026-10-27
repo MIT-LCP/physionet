@@ -83,17 +83,26 @@ When using `--source aws`, boto3 discovers credentials automatically via the [st
 
 **Authentication:**
 
-For credentialed datasets, provide PhysioNet credentials via flags or environment variables:
+For credentialed datasets, provide your PhysioNet username. The CLI prompts for
+your password when run in a terminal. Your account must already meet the
+dataset's access requirements on its PhysioNet page.
 
 ```bash
-# Via flags
-physionet download mimic-iv --username user --password pass
+physionet download mimic-iv --version 3.1 --username user
+```
 
-# Via environment variables
+For unattended downloads, set both environment variables instead:
+
+```bash
 export PHYSIONET_USERNAME=user
 export PHYSIONET_PASSWORD=pass
-physionet download mimic-iv
+physionet download mimic-iv --version 3.1
 ```
+
+In a non-interactive session, a username without a password fails with an
+explanation instead of waiting for input. The Python API still accepts explicit
+`username` and `password` arguments. Avoid putting passwords in command-line
+arguments, where they may appear in shell history or process listings.
 
 PhysioNet credentials are sent only to the configured PhysioNet origin. Requests
 to S3 mirrors or other hosts do not receive them; `--source aws` uses the AWS

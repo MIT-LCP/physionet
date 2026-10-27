@@ -14,6 +14,52 @@ download_module = import_module("physionet.download")
 VERSIONS = [{"slug": "demo", "title": "Demo", "version": "1.0", "abstract": "", "citation": ""}]
 
 
+def test_cli_prompts_for_password_with_username(monkeypatch):
+    monkeypatch.delenv("PHYSIONET_PASSWORD", raising=False)
+    monkeypatch.delenv("PHYSIONET_USERNAME", raising=False)
+    with patch.object(sys, "argv", ["physionet", "download", "demo", "--username", "researcher"]):
+        with patch.object(sys.stdin, "isatty", return_value=True):
+            with patch("physionet.cli.getpass.getpass", return_value="secret") as prompt:
+                with patch.object(download_module, "download") as mock_download:
+                    assert main() == 0
+    prompt.assert_called_once_with("PhysioNet password: ")
+    assert mock_download.call_args.kwargs["username"] == "researcher"
+    assert mock_download.call_args.kwargs["password"] == "secret"
+
+
+def test_cli_requires_password_for_unattended_download(monkeypatch, capsys):
+    monkeypatch.delenv("PHYSIONET_PASSWORD", raising=False)
+    monkeypatch.delenv("PHYSIONET_USERNAME", raising=False)
+    with patch.object(sys, "argv", ["physionet", "download", "demo", "--username", "researcher"]):
+        with patch.object(sys.stdin, "isatty", return_value=False):
+            with patch.object(download_module, "download") as mock_download:
+                assert main() == 1
+    mock_download.assert_not_called()
+    assert "PHYSIONET_PASSWORD" in capsys.readouterr().err
+
+
+def test_cli_uses_environment_credentials_without_prompt(monkeypatch):
+    monkeypatch.setenv("PHYSIONET_USERNAME", "researcher")
+    monkeypatch.setenv("PHYSIONET_PASSWORD", "secret")
+    with patch.object(sys, "argv", ["physionet", "download", "demo"]):
+        with patch("physionet.cli.getpass.getpass") as prompt:
+            with patch.object(download_module, "download") as mock_download:
+                assert main() == 0
+    prompt.assert_not_called()
+    assert mock_download.call_args.kwargs["password"] == "secret"
+
+
+def test_cli_does_not_prompt_for_environment_username_alone(monkeypatch):
+    monkeypatch.setenv("PHYSIONET_USERNAME", "researcher")
+    monkeypatch.delenv("PHYSIONET_PASSWORD", raising=False)
+    with patch.object(sys, "argv", ["physionet", "download", "demo"]):
+        with patch("physionet.cli.getpass.getpass") as prompt:
+            with patch.object(download_module, "download") as mock_download:
+                assert main() == 0
+    prompt.assert_not_called()
+    assert mock_download.call_args.kwargs["password"] is None
+
+
 def test_cli_exits_nonzero_when_a_file_fails(tmp_path, capsys):
     good_content = b"good data"
     manifest = "\n".join(
