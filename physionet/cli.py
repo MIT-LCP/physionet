@@ -39,6 +39,13 @@ def main():
     versions_parser.add_argument("slug", help="Project identifier")
     versions_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
 
+    cite_parser = subparsers.add_parser("cite", help="Get project and standard PhysioNet citations")
+    cite_parser.add_argument("slug", help="Project identifier")
+    cite_parser.add_argument("--version", help="Project version (default: latest)")
+    citation_output = cite_parser.add_mutually_exclusive_group()
+    citation_output.add_argument("--bibtex", action="store_true", help="Print BibTeX entries")
+    citation_output.add_argument("--json", action="store_true", help="Print citation data as JSON")
+
     # Download subcommand
     download_parser = subparsers.add_parser(
         "download",
@@ -131,7 +138,7 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command in ("search", "show", "versions"):
+    if args.command in ("search", "show", "versions", "cite"):
         return _handle_discovery(args)
     elif args.command == "download":
         return _handle_download(args)
@@ -188,6 +195,29 @@ def _handle_discovery(args):
                 else:
                     for version in versions:
                         print(f"{version.version}  {version.title}")
+            elif args.command == "cite":
+                citations = client.projects.get_citations(
+                    args.slug, args.version, include_bibtex=args.bibtex or args.json
+                )
+                if args.bibtex:
+                    if not citations.project.bibtex:
+                        raise ValueError(
+                            f"BibTeX is unavailable for {args.slug} v{citations.version}; "
+                            f"see {citations.project.url}"
+                        )
+                    print("\n\n".join(
+                        [citations.project.bibtex]
+                        + [citation.bibtex for citation in citations.physionet]
+                    ))
+                elif args.json:
+                    print(json.dumps(asdict(citations)))
+                else:
+                    print(f"Project citation ({args.slug} v{citations.version}):")
+                    print(citations.project.text)
+                    print("\nStandard PhysioNet citation:")
+                    for citation in citations.physionet:
+                        print(citation.text)
+                    print(f"\nSee {citations.project.url} for any additional publication citations.")
         return 0
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

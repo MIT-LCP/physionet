@@ -1,4 +1,5 @@
 from .client import PhysioNetClient
+from physionet.citation import Citation, CitationBundle
 from .exceptions import (
     PhysioNetAPIError,
     BadRequestError,
@@ -9,6 +10,8 @@ from .exceptions import (
 
 __all__ = [
     "PhysioNetClient",
+    "Citation",
+    "CitationBundle",
     "PhysioNetAPIError",
     "BadRequestError",
     "ForbiddenError",
