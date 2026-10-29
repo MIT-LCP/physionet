@@ -1,5 +1,7 @@
 from typing import List, Optional, Iterator
-from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail
+from urllib.parse import quote
+
+from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail, ProjectAccessStatus
 
 
 class ProjectsAPI:
@@ -7,6 +9,19 @@ class ProjectsAPI:
 
     def __init__(self, client):
         self.client = client
+
+    def get_access_status(self, project_slug: str, version: str = "latest") -> ProjectAccessStatus:
+        """Ask the server whether the current user can download this version.
+
+        ``version='latest'`` is resolved on the server. Requirements are
+        informational; each file request remains independently authorized.
+        """
+        slug = quote(project_slug, safe="")
+        selected_version = quote(version, safe="")
+        response = self.client._make_request(
+            "GET", f"projects/{slug}/versions/{selected_version}/access/"
+        )
+        return ProjectAccessStatus.from_dict(response.json())
 
     def list_published(self) -> List[PublishedProject]:
         """
