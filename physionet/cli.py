@@ -39,6 +39,19 @@ def main():
     versions_parser.add_argument("slug", help="Project identifier")
     versions_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
 
+    access_parser = subparsers.add_parser(
+        "access", help="Check your current access to a published dataset"
+    )
+    access_parser.add_argument("slug", help="Project identifier (e.g., mimiciv)")
+    access_parser.add_argument("--version", default="latest", help="Project version (default: latest)")
+    access_parser.add_argument("--username", help="PhysioNet username (or PHYSIONET_USERNAME)")
+    access_parser.add_argument("--password", help="PhysioNet password (or PHYSIONET_PASSWORD)")
+    access_parser.add_argument(
+        "--base-url", default=os.getenv("PHYSIONET_BASE_URL", "https://physionet.org"),
+        help="PhysioNet server URL (or PHYSIONET_BASE_URL)",
+    )
+    access_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
+
     # Download subcommand
     download_parser = subparsers.add_parser(
         "download",
@@ -133,6 +146,8 @@ def main():
 
     if args.command in ("search", "show", "versions"):
         return _handle_discovery(args)
+    elif args.command == "access":
+        return _handle_access(args)
     elif args.command == "download":
         return _handle_download(args)
     elif args.command == "validate":
@@ -191,6 +206,54 @@ def _handle_discovery(args):
         return 0
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def _handle_access(args):
+    """Show the server's current access decision and required steps."""
+    from physionet.api.client import PhysioNetClient
+    from physionet.api.exceptions import NotFoundError
+
+    username = args.username or os.getenv("PHYSIONET_USERNAME")
+    password = args.password or os.getenv("PHYSIONET_PASSWORD")
+    if username and not password:
+        if not sys.stdin.isatty():
+            print(
+                "PhysioNet password required: set PHYSIONET_PASSWORD for unattended use.",
+                file=sys.stderr,
+            )
+            return 1
+        password = getpass.getpass("PhysioNet password: ")
+    try:
+        with PhysioNetClient(base_url=args.base_url, username=username, password=password) as client:
+            access = client.projects.get_access_status(args.slug, args.version)
+        if args.json:
+            print(json.dumps(asdict(access)))
+        else:
+            print(f"{access.slug} v{access.version} [{access.access_policy}]")
+            if access.can_download:
+                print("PhysioNet file downloads: available to you")
+            elif access.status == "unavailable":
+                print("PhysioNet file downloads: unavailable; check the project page for details")
+            else:
+                print("PhysioNet file downloads: not available to you yet")
+            if not access.can_download:
+                for requirement in access.requirements:
+                    if requirement.status != "complete":
+                        print(f"  {requirement.label}: {requirement.status} — {requirement.url}")
+                print(f"Project page: {access.project_url}")
+        return 0
+    except NotFoundError as exc:
+        print(
+            f"Access status unavailable: {exc}. Check the project/version and "
+            "whether this PhysioNet server supports the access API.",
+            file=sys.stderr,
+        )
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
 
