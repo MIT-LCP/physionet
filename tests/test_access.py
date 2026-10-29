@@ -72,11 +72,38 @@ def test_access_cli_uses_environment_and_custom_server(monkeypatch, capsys):
 def test_access_cli_old_server_is_clear_and_fails(capsys):
     with requests_mock.Mocker() as mock:
         mock.get("https://physionet.org/api/v1/projects/mimiciv/versions/latest/access/",
-                 status_code=404, json={"detail": "Not found"})
+                 status_code=404, text="<!DOCTYPE html><html>large error page</html>",
+                 headers={"Content-Type": "text/html"})
+        mock.get("https://physionet.org/api/v1/projects/mimiciv/versions/", json=[
+            {"slug": "mimiciv", "title": "MIMIC-IV", "version": "3.1",
+             "abstract": "", "citation": ""},
+        ])
         assert run_cli("access", "mimiciv", "--json") == 1
     output = capsys.readouterr()
     assert output.out == ""
-    assert "supports the access API" in output.err
+    assert "does not yet provide the access-status API" in output.err
+    assert "large error page" not in output.err
+    assert len(output.err) < 250
+
+
+def test_access_cli_distinguishes_unknown_project_and_version(capsys):
+    with requests_mock.Mocker() as mock:
+        mock.get("https://physionet.org/api/v1/projects/unknown/versions/latest/access/",
+                 status_code=404, text="<html>Not found</html>")
+        mock.get("https://physionet.org/api/v1/projects/unknown/versions/",
+                 status_code=404, text="<html>Not found</html>")
+        assert run_cli("access", "unknown") == 1
+    assert "Project not found: unknown" in capsys.readouterr().err
+
+    with requests_mock.Mocker() as mock:
+        mock.get("https://physionet.org/api/v1/projects/mimiciv/versions/9.9/access/",
+                 status_code=404, text="<html>Not found</html>")
+        mock.get("https://physionet.org/api/v1/projects/mimiciv/versions/", json=[
+            {"slug": "mimiciv", "title": "MIMIC-IV", "version": "3.1",
+             "abstract": "", "citation": ""},
+        ])
+        assert run_cli("access", "mimiciv", "--version", "9.9") == 1
+    assert "Version 9.9 not found for mimiciv" in capsys.readouterr().err
 
 
 def test_access_cli_missing_unattended_password_fails_before_request(monkeypatch, capsys):

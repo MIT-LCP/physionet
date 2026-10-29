@@ -243,12 +243,25 @@ def _handle_access(args):
                         print(f"  {requirement.label}: {requirement.status} — {requirement.url}")
                 print(f"Project page: {access.project_url}")
         return 0
-    except NotFoundError as exc:
-        print(
-            f"Access status unavailable: {exc}. Check the project/version and "
-            "whether this PhysioNet server supports the access API.",
-            file=sys.stderr,
-        )
+    except NotFoundError:
+        # An older server returns the same 404 as an unknown project/version.
+        # Check the existing versions endpoint before explaining the failure.
+        try:
+            with PhysioNetClient(base_url=args.base_url, username=username, password=password) as client:
+                versions = client.projects.list_versions(args.slug)
+        except NotFoundError:
+            message = f"Project not found: {args.slug}."
+        except Exception:
+            message = "Access status unavailable; check the project/version or try again later."
+        else:
+            if args.version != "latest" and not any(item.version == args.version for item in versions):
+                message = f"Version {args.version} not found for {args.slug}."
+            else:
+                message = (
+                    "This PhysioNet server does not yet provide the access-status API. "
+                    f"See {args.base_url.rstrip('/')}/content/{args.slug}/ for access requirements."
+                )
+        print(message, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
