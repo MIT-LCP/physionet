@@ -3,6 +3,43 @@ from typing import Optional, List, Any
 
 
 @dataclass
+class AccessRequirement:
+    """One server-reported step in a project's standard access path."""
+
+    code: str
+    label: str
+    status: str
+    url: str
+
+
+@dataclass
+class ProjectAccessStatus:
+    """File access for this request, which may be anonymous, as evaluated by PhysioNet."""
+
+    slug: str
+    version: str
+    access_policy: str
+    authenticated: bool
+    can_download: bool
+    status: str
+    requirements: List[AccessRequirement]
+    project_url: str
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ProjectAccessStatus":
+        requirements = [AccessRequirement(
+            code=item["code"], label=item["label"],
+            status=item["status"], url=item["url"],
+        ) for item in data["requirements"]]
+        return cls(
+            slug=data["slug"], version=data["version"],
+            access_policy=data["access_policy"], authenticated=data["authenticated"],
+            can_download=data["can_download"], status=data["status"],
+            requirements=requirements, project_url=data["project_url"],
+        )
+
+
+@dataclass
 class ProjectVersion:
     """Represents a project version."""
 

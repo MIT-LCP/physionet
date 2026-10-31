@@ -97,9 +97,16 @@ class PhysioNetClient:
         """Handle API error responses."""
         try:
             error_data = response.json()
-            error_msg = error_data.get("error", str(error_data))
-        except Exception:
-            error_msg = response.text or response.reason
+            if isinstance(error_data, dict):
+                error_msg = error_data.get("error") or error_data.get("detail") or str(error_data)
+            else:
+                error_msg = str(error_data)
+        except ValueError:
+            body = response.text.strip()
+            if "html" in response.headers.get("Content-Type", "").lower() or body.startswith("<"):
+                error_msg = f"HTTP {response.status_code}"
+            else:
+                error_msg = " ".join(body.split())[:300] or response.reason or f"HTTP {response.status_code}"
 
         if response.status_code == 400:
             raise BadRequestError(error_msg)

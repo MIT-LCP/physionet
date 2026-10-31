@@ -1,4 +1,5 @@
 from .client import PhysioNetClient
+from .models import AccessRequirement, ProjectAccessStatus
 from .exceptions import (
     PhysioNetAPIError,
     BadRequestError,
@@ -9,6 +10,8 @@ from .exceptions import (
 
 __all__ = [
     "PhysioNetClient",
+    "AccessRequirement",
+    "ProjectAccessStatus",
     "PhysioNetAPIError",
     "BadRequestError",
     "ForbiddenError",

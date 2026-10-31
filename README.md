@@ -83,6 +83,45 @@ When using `--source aws`, boto3 discovers credentials automatically via the [st
 
 **Authentication:**
 
+Check your current access before starting a restricted download:
+
+```bash
+physionet access mimiciv --version 3.1 --username user
+physionet access mimiciv --version 3.1 --username user --json
+```
+
+`access` asks the PhysioNet server whether this request can download files
+directly from PhysioNet for the selected version. Without credentials, it
+checks anonymous access and cannot tell whether your account has completed
+credentialing, training, or a data use agreement. Use `--username` to check
+your own account and see any outstanding steps. The command prompts for a
+password in a terminal; for unattended use, set `PHYSIONET_USERNAME`
+and `PHYSIONET_PASSWORD`. Omit `--version` to ask the server for its latest
+published version. A successful status lookup exits with `0` even if access
+is pending; check `authenticated` and `can_download` in JSON to understand
+which account, if any, was checked. Cloud access may have separate requirements.
+The response is informational: the server authorizes each file request again
+when it happens. Some projects may allow access through other routes,
+such as events; `can_download` is the server's current decision.
+
+The command requires a PhysioNet server with the access-status API. If you
+use a local or other deployment, pass `--base-url` or set
+`PHYSIONET_BASE_URL`. Until that server is updated, the command reports that
+the status is unavailable. In Python, use:
+
+```python
+from physionet import PhysioNetClient
+
+with PhysioNetClient(username="user", password="password") as client:
+    status = client.projects.get_access_status("mimiciv", version="3.1")
+    if status.can_download:
+        print("Ready to download")
+    else:
+        for step in status.requirements:
+            if step.status != "complete":
+                print(step.label, step.status, step.url)
+```
+
 For credentialed datasets, provide your PhysioNet username. The CLI prompts for
 your password when run in a terminal. Your account must already meet the
 dataset's access requirements on its PhysioNet page.
