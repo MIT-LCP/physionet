@@ -254,7 +254,9 @@ def _handle_access(args):
         except Exception:
             message = "Access status unavailable; check the project/version or try again later."
         else:
-            if args.version != "latest" and not any(item.version == args.version for item in versions):
+            if not versions:
+                message = f"Project not found: {args.slug}."
+            elif args.version != "latest" and not any(item.version == args.version for item in versions):
                 message = f"Version {args.version} not found for {args.slug}."
             else:
                 message = (
