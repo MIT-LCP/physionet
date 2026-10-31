@@ -106,6 +106,18 @@ def test_access_cli_distinguishes_unknown_project_and_version(capsys):
     assert "Version 9.9 not found for mimiciv" in capsys.readouterr().err
 
 
+def test_access_cli_empty_versions_means_project_not_found(capsys):
+    # PhysioNet returns 200 with [] for a slug that has no published versions.
+    with requests_mock.Mocker() as mock:
+        mock.get("https://physionet.org/api/v1/projects/mimic-iii/versions/latest/access/",
+                 status_code=404, text="<html>Not found</html>")
+        mock.get("https://physionet.org/api/v1/projects/mimic-iii/versions/", json=[])
+        assert run_cli("access", "mimic-iii") == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == "Project not found: mimic-iii.\n"
+
+
 def test_access_cli_missing_unattended_password_fails_before_request(monkeypatch, capsys):
     monkeypatch.setenv("PHYSIONET_USERNAME", "researcher")
     monkeypatch.delenv("PHYSIONET_PASSWORD", raising=False)
