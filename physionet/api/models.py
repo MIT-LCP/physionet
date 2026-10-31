@@ -14,7 +14,7 @@ class AccessRequirement:
 
 @dataclass
 class ProjectAccessStatus:
-    """Current file access and requirements as evaluated by PhysioNet."""
+    """File access for this request, which may be anonymous, as evaluated by PhysioNet."""
 
     slug: str
     version: str
