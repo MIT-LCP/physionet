@@ -231,13 +231,26 @@ def _handle_access(args):
             print(json.dumps(asdict(access)))
         else:
             print(f"{access.slug} v{access.version} [{access.access_policy}]")
-            if access.can_download:
+            if not access.authenticated:
+                print("Access check: anonymous; your account access was not checked.")
+                if access.can_download:
+                    print("PhysioNet file downloads: available without signing in")
+                elif access.status == "sign_in_required":
+                    if username:
+                        print("The server did not authenticate your credentials. Check your username and password.")
+                    else:
+                        print(f"To check your account: physionet access {args.slug} --username YOUR_USERNAME")
+                else:
+                    print("PhysioNet file downloads: unavailable for this anonymous request")
+                if not access.can_download:
+                    print(f"Project page: {access.project_url}")
+            elif access.can_download:
                 print("PhysioNet file downloads: available to you")
             elif access.status == "unavailable":
                 print("PhysioNet file downloads: unavailable; check the project page for details")
             else:
                 print("PhysioNet file downloads: not available to you yet")
-            if not access.can_download:
+            if access.authenticated and not access.can_download:
                 for requirement in access.requirements:
                     if requirement.status != "complete":
                         print(f"  {requirement.label}: {requirement.status} — {requirement.url}")

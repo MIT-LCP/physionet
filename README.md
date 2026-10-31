@@ -87,20 +87,21 @@ Check your current access before starting a restricted download:
 
 ```bash
 physionet access mimiciv --version 3.1 --username user
-physionet access mimiciv --version 3.1 --json
+physionet access mimiciv --version 3.1 --username user --json
 ```
 
-`access` asks the PhysioNet server whether you can download files directly from
-PhysioNet for the selected
-version and shows the credentialing, training, agreement, or contributor
-review steps that still need attention. It accepts `--username` and prompts
-for a password in a terminal; for unattended use, set `PHYSIONET_USERNAME`
+`access` asks the PhysioNet server whether this request can download files
+directly from PhysioNet for the selected version. Without credentials, it
+checks anonymous access and cannot tell whether your account has completed
+credentialing, training, or a data use agreement. Use `--username` to check
+your own account and see any outstanding steps. The command prompts for a
+password in a terminal; for unattended use, set `PHYSIONET_USERNAME`
 and `PHYSIONET_PASSWORD`. Omit `--version` to ask the server for its latest
 published version. A successful status lookup exits with `0` even if access
-is pending; check `can_download` in JSON to decide whether a download can
-start. Cloud access may have separate requirements. The response is
-informational: the server authorizes each file request
-again when it happens. Some projects may allow access through other routes,
+is pending; check `authenticated` and `can_download` in JSON to understand
+which account, if any, was checked. Cloud access may have separate requirements.
+The response is informational: the server authorizes each file request again
+when it happens. Some projects may allow access through other routes,
 such as events; `can_download` is the server's current decision.
 
 The command requires a PhysioNet server with the access-status API. If you

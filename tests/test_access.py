@@ -47,15 +47,42 @@ def test_python_api_gets_server_status_and_resolves_latest():
 def test_access_cli_prints_steps_and_json(capsys):
     with requests_mock.Mocker() as mock:
         mock.get("https://physionet.org/api/v1/projects/mimiciv/versions/3.1/access/", json=ACCESS)
-        assert run_cli("access", "mimiciv", "--version", "3.1") == 0
+        assert run_cli("access", "mimiciv", "--version", "3.1",
+                       "--username", "researcher", "--password", "secret") == 0
         human = capsys.readouterr()
-        assert run_cli("access", "mimiciv", "--version", "3.1", "--json") == 0
+        assert run_cli("access", "mimiciv", "--version", "3.1", "--json",
+                       "--username", "researcher", "--password", "secret") == 0
         machine = capsys.readouterr()
     assert "CITI training: pending" in human.out
     assert "Data use agreement: required" in human.out
     assert "PhysioNet credentialing: complete" not in human.out
     assert json.loads(machine.out) == ACCESS
     assert machine.err == ""
+
+
+def test_access_cli_anonymous_check_does_not_claim_to_know_account_access(monkeypatch, capsys):
+    monkeypatch.delenv("PHYSIONET_USERNAME", raising=False)
+    monkeypatch.delenv("PHYSIONET_PASSWORD", raising=False)
+    anonymous = {
+        **ACCESS, "authenticated": False, "status": "sign_in_required",
+        "requirements": [
+            {**item, "status": "required" if item["code"] == "sign_in" else "unknown"}
+            for item in ACCESS["requirements"]
+        ],
+    }
+    with requests_mock.Mocker() as mock:
+        mock.get("https://physionet.org/api/v1/projects/mimiciv/versions/latest/access/", json=anonymous)
+        assert run_cli("access", "mimiciv") == 0
+        human = capsys.readouterr()
+        assert run_cli("access", "mimiciv", "--json") == 0
+    output = capsys.readouterr()
+    assert "anonymous; your account access was not checked" in human.out
+    assert "physionet access mimiciv --username YOUR_USERNAME" in human.out
+    assert "not available to you yet" not in human.out
+    assert "CITI training: unknown" not in human.out
+    assert json.loads(output.out)["authenticated"] is False
+    assert json.loads(output.out)["can_download"] is False
+    assert "Authorization" not in mock.last_request.headers
 
 
 def test_access_cli_uses_environment_and_custom_server(monkeypatch, capsys):
