@@ -83,26 +83,53 @@ When using `--source aws`, boto3 discovers credentials automatically via the [st
 
 **Authentication:**
 
-For credentialed datasets, provide your PhysioNet username. The CLI prompts for
-your password when run in a terminal. Your account must already meet the
-dataset's access requirements on its PhysioNet page.
+Restricted and credentialed datasets need a PhysioNet account that meets the
+dataset's access requirements on its PhysioNet page. The simplest way to use
+your account is to sign in once:
+
+```bash
+physionet login
+```
+
+This shows a link and a short code. Open the link, sign in to PhysioNet if
+needed, enter the code and approve. Later downloads, from the CLI and the
+Python API, then use your account. It works on remote machines too (over SSH,
+on a cluster, or in a notebook): open the link on any device. No password is
+stored. The sign-in is saved in `~/.config/physionet/credentials.json`
+(`%APPDATA%\physionet` on Windows), readable only by you.
+
+```bash
+physionet whoami   # Show which account you are signed in as
+physionet logout   # Sign out and delete the saved sign-in
+```
+
+You can also see and sign out signed-in devices on PhysioNet, under
+Settings > Tokens.
+
+For unattended jobs (CI, scheduled scripts), create a personal access token
+with the "Download data" scope on PhysioNet under Settings > Tokens, and set it
+as an environment variable:
+
+```bash
+export PHYSIONET_TOKEN=pnpat_...
+physionet download mimic-iv --version 3.1
+```
+
+You can still use your username and password. The CLI prompts for the password
+when run in a terminal:
 
 ```bash
 physionet download mimic-iv --version 3.1 --username user
 ```
 
-For unattended downloads, set both environment variables instead:
+or set `PHYSIONET_USERNAME` and `PHYSIONET_PASSWORD`. In a non-interactive
+session, a username without a password fails with an explanation instead of
+waiting for input. Avoid putting passwords in command-line arguments, where
+they may appear in shell history or process listings.
 
-```bash
-export PHYSIONET_USERNAME=user
-export PHYSIONET_PASSWORD=pass
-physionet download mimic-iv --version 3.1
-```
-
-In a non-interactive session, a username without a password fails with an
-explanation instead of waiting for input. The Python API still accepts explicit
-`username` and `password` arguments. Avoid putting passwords in command-line
-arguments, where they may appear in shell history or process listings.
+If several are set, credentials are used in this order: `token`, or `username`
+and `password`, passed to the Python API; then `PHYSIONET_TOKEN`; then
+`PHYSIONET_USERNAME` and `PHYSIONET_PASSWORD`; then the saved sign-in.
 
 PhysioNet credentials are sent only to the configured PhysioNet origin. Requests
 to S3 mirrors or other hosts do not receive them; `--source aws` uses the AWS
@@ -226,9 +253,9 @@ Supported table formats are `.csv`, `.csv.gz`, `.tsv`, `.tsv.gz`, `.parquet`
 (needs `pyarrow`) and `.xlsx`. For other files, such as WFDB records or PDFs,
 use `fetch()` and open the returned path yourself.
 
-Restricted datasets use the same credentials as `download()`: `username` and
-`password` arguments, or the `PHYSIONET_USERNAME` and `PHYSIONET_PASSWORD`
-environment variables. As with `download()`, `source="auto"` (the default)
+Restricted datasets use the same credentials as `download()`: the sign-in
+saved by `physionet login` (or `physionet.login()` in Python), a `token`
+argument or `PHYSIONET_TOKEN`, or a username and password. As with `download()`, `source="auto"` (the default)
 uses the AWS open data mirror when a dataset is on it, and PhysioNet otherwise;
 `source="physionet"` or `source="aws"` picks one.
 
@@ -375,6 +402,24 @@ from physionet.api.utils import get_credentials_from_env
 
 username, password = get_credentials_from_env()
 client = PhysioNetClient(username=username, password=password)
+
+# Or a personal access token
+client = PhysioNetClient(token="pnpat_...")
+
+# Without credentials, the client uses the sign-in saved by `physionet login`
+client = PhysioNetClient()
+```
+
+### Sign in from Python
+
+In a notebook, sign in without leaving Python:
+
+```python
+import physionet
+
+physionet.login()   # Prints a link and a code to approve in your browser
+df = physionet.load("mimic-iv", "hosp/patients", version="3.1")
+physionet.logout()
 ```
 
 ### Using Context Manager

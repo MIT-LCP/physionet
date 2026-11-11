@@ -159,7 +159,7 @@ def test_invalid_project_or_version_names_are_rejected(cache, slug, version):
 
 @pytest.mark.parametrize(
     ("status", "error", "message"),
-    [(404, NotFoundError, "no project demo version 1.0"), (403, ForbiddenError, "PHYSIONET_USERNAME")],
+    [(404, NotFoundError, "no project demo version 1.0"), (403, ForbiddenError, "physionet login")],
 )
 def test_missing_or_restricted_projects_raise_clear_errors(cache, status, error, message):
     with rm.Mocker() as mocker:

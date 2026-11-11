@@ -31,7 +31,7 @@ import requests
 
 from physionet.api.client import PhysioNetClient
 from physionet.api.exceptions import ForbiddenError, NotFoundError
-from physionet.api.utils import get_credentials_from_env
+from physionet.auth import resolve_credentials
 from physionet.download import (
     _download_file,
     _download_file_s3,
@@ -85,6 +85,7 @@ def fetch(
     source: str = "auto",
     username: Optional[str] = None,
     password: Optional[str] = None,
+    token: Optional[str] = None,
     base_url: str = DEFAULT_BASE_URL,
     retries: int = 3,
     verify: bool = False,
@@ -101,6 +102,8 @@ def fetch(
         source: Download source - "auto", "physionet", or "aws"
         username: PhysioNet username (or use PHYSIONET_USERNAME env var)
         password: PhysioNet password (or use PHYSIONET_PASSWORD env var)
+        token: PhysioNet access token (or use PHYSIONET_TOKEN env var).
+            Without credentials, the sign-in saved by `physionet login` is used.
         base_url: PhysioNet base URL
         retries: Number of retries for transient download errors
         verify: Re-check the checksum of a file that is already cached, and
@@ -115,7 +118,7 @@ def fetch(
         NotFoundError: If the project or version is not found
         ForbiddenError: If your account cannot access the project
     """
-    with _Remote(base_url, username, password) as remote:
+    with _Remote(base_url, username, password, token) as remote:
         path = _clean_path(path)
         return _fetch(remote, slug, path, [path], version, cache_dir, source, retries, verify)
 
@@ -129,6 +132,7 @@ def load(
     source: str = "auto",
     username: Optional[str] = None,
     password: Optional[str] = None,
+    token: Optional[str] = None,
     base_url: str = DEFAULT_BASE_URL,
     retries: int = 3,
     verify: bool = False,
@@ -163,7 +167,7 @@ def load(
         # The exact name comes last, so a file in another format is reported clearly.
         candidates = [table + extension for extension, _ in TABLE_READERS] + [table]
 
-    with _Remote(base_url, username, password) as remote:
+    with _Remote(base_url, username, password, token) as remote:
         file_path = _fetch(
             remote, slug, table, candidates, version, cache_dir, source, retries, verify, tables_only=True
         )
@@ -173,25 +177,20 @@ def load(
 class _Remote:
     """Connect to PhysioNet only when the cache cannot answer."""
 
-    def __init__(self, base_url: str, username: Optional[str], password: Optional[str]):
-        if username is None or password is None:
-            env_user, env_pass = get_credentials_from_env()
-            username = username or env_user
-            password = password or env_pass
+    def __init__(self, base_url: str, username: Optional[str], password: Optional[str], token: Optional[str]):
         self.base_url = base_url
-        self.username = username
-        self.password = password
+        self.username, self.password, self.token = resolve_credentials(username, password, token)
         self._client: Optional[PhysioNetClient] = None
 
     @property
     def has_credentials(self) -> bool:
-        return bool(self.username and self.password)
+        return self.client.auth_method is not None
 
     @property
     def client(self) -> PhysioNetClient:
         if self._client is None:
             self._client = PhysioNetClient(
-                base_url=self.base_url, username=self.username, password=self.password
+                base_url=self.base_url, username=self.username, password=self.password, token=self.token
             )
         return self._client
 
@@ -303,8 +302,8 @@ def _manifest(remote: _Remote, cache: Path, origin: str, slug: str, version: str
             if status in (401, 403):
                 raise ForbiddenError(
                     f"Access to {slug} {version} was denied. Restricted datasets need a PhysioNet "
-                    "account with access to the project: pass username and password, or set "
-                    "PHYSIONET_USERNAME and PHYSIONET_PASSWORD."
+                    "account with access to the project: run `physionet login`, set PHYSIONET_TOKEN, "
+                    "or pass username and password."
                 ) from exc
             raise
         cached.parent.mkdir(parents=True, exist_ok=True)
