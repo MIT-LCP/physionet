@@ -244,15 +244,45 @@ def test_cached_files_are_trusted_unless_verify_is_requested(cache):
         assert mocker.call_count == 1  # Only the file; the checksum list is cached.
 
 
+def requires_credentials(request):
+    return "Authorization" in request.headers
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions")
-def test_files_fetched_with_credentials_are_private(cache):
+def test_restricted_files_are_private(cache):
     with rm.Mocker() as mocker:
-        mock_project(mocker)
+        mocker.get(f"{FILES}/SHA256SUMS.txt", status_code=403)
+        mocker.get(f"{FILES}/SHA256SUMS.txt", text=MANIFEST, additional_matcher=requires_credentials)
+        mocker.get(f"{FILES}/docs/notes.txt", content=NOTES)
         restricted = fetch("demo", "docs/notes.txt", "1.0", source="physionet", username="u", password="p")
-        open_file = fetch("demo", "hosp/patients.csv.gz", "1.0", source="physionet")
 
     assert stat.S_IMODE(restricted.stat().st_mode) == 0o600
-    assert stat.S_IMODE(open_file.stat().st_mode) & 0o044  # Open data keeps normal permissions.
+    assert (cache / "physionet.org" / ".manifests" / "demo" / "1.0" / "ACCESS").read_text() == "restricted\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions")
+def test_open_files_stay_readable_when_signed_in(cache):
+    """Open data in a shared cache stays readable by others, even when fetched with credentials."""
+    with rm.Mocker() as mocker:
+        mock_project(mocker)
+        open_file = fetch("demo", "hosp/patients.csv.gz", "1.0", source="physionet", username="u", password="p")
+        # The checksum list was requested without credentials.
+        assert "Authorization" not in mocker.request_history[0].headers
+
+    assert stat.S_IMODE(open_file.stat().st_mode) & 0o044
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file permissions")
+def test_files_are_private_when_access_is_unknown(cache):
+    """A checksum list cached by an older version has no ACCESS file, so credentials mean private."""
+    manifests = cache / "physionet.org" / ".manifests" / "demo" / "1.0"
+    manifests.mkdir(parents=True)
+    (manifests / "SHA256SUMS.txt").write_text(MANIFEST)
+    with rm.Mocker() as mocker:
+        mock_project(mocker)
+        path = fetch("demo", "docs/notes.txt", "1.0", source="physionet", username="u", password="p")
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize("linked", ["docs", "1.0", "physionet.org"])

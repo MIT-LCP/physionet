@@ -103,6 +103,10 @@ physionet whoami   # Show which account you are signed in as
 physionet logout   # Sign out and delete the saved sign-in
 ```
 
+`physionet login` only opens a browser when one can be shown, so over SSH it
+just prints the link. Signing in again replaces, and signs out, the previous
+sign-in.
+
 You can also see and sign out signed-in devices on PhysioNet, under
 Settings > Tokens.
 
@@ -273,7 +277,8 @@ server. Delete the cache folder to clear it.
 - Files are only added after their SHA-256 checksum matches the dataset's
   `SHA256SUMS.txt`. Cached files are not checked again unless you pass
   `verify=True`, which re-checks the file and downloads it again if it changed.
-- Files fetched with credentials are saved readable only by you. Anyone who can
+- Files from restricted projects are saved readable only by you; files from open
+  projects keep normal permissions, even when you are signed in. Anyone who can
   read the cache folder can read any other file in it, so a cache shared on a
   cluster suits open datasets. Keep restricted data in your own cache.
 - Symbolic links inside the cache folder are refused. Only use a cache folder

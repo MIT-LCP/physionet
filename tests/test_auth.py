@@ -3,6 +3,7 @@
 import os
 import stat
 import sys
+import threading
 import time
 from unittest.mock import patch
 
@@ -107,9 +108,69 @@ class TestLogin:
             with pytest.raises(auth.LoginError, match="Invalid client_id"):
                 auth.login(open_browser=False)
 
+    def test_server_errors_while_waiting_are_retried(self):
+        with requests_mock.Mocker() as m:
+            m.post(f"{BASE}/oauth/device-authorization/", json=START)
+            m.post(f"{BASE}/oauth/token/", [
+                {"status_code": 502, "text": "<html>Bad Gateway</html>"},
+                {"status_code": 503, "json": {"error": "temporarily_unavailable"}},
+                {"status_code": 200, "json": TOKEN},
+            ])
+            m.get(f"{BASE}/oauth/userinfo", json={"username": "rgmark"})
+            assert auth.login(open_browser=False) == "rgmark"
+
+    def test_signing_in_again_revokes_the_previous_sign_in(self):
+        save()
+        with requests_mock.Mocker() as m:
+            m.post(f"{BASE}/oauth/device-authorization/", json=START)
+            m.post(f"{BASE}/oauth/token/", json=TOKEN)
+            m.get(f"{BASE}/oauth/userinfo", json={"username": "rgmark"})
+            m.post(f"{BASE}/oauth/revoke-token/")
+            auth.login(open_browser=False)
+            revoked = [r.text for r in m.request_history if r.path == "/oauth/revoke-token/"]
+        assert any("token=saved-refresh" in body for body in revoked)
+        assert auth.load_saved_login(BASE)["access_token"] == "access-1"
+
+    @pytest.mark.parametrize("env, platform, opens", [
+        ({"SSH_CONNECTION": "10.0.0.1 22 10.0.0.2 22"}, "darwin", False),
+        ({}, "linux", False),
+        ({"DISPLAY": ":0"}, "linux", True),
+        ({"WAYLAND_DISPLAY": "wayland-0"}, "linux", True),
+        ({}, "darwin", True),
+    ])
+    def test_browser_is_not_opened_without_a_display(self, monkeypatch, env, platform, opens):
+        for name in ("SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.setattr(auth.sys, "platform", platform)
+        with requests_mock.Mocker() as m, patch.object(auth.webbrowser, "open") as browser:
+            m.post(f"{BASE}/oauth/device-authorization/", json=START)
+            m.post(f"{BASE}/oauth/token/", json=TOKEN)
+            m.get(f"{BASE}/oauth/userinfo", json={"username": "rgmark"})
+            auth.login()
+        assert browser.called is opens
+
     def test_needs_https(self):
         with pytest.raises(auth.LoginError, match="HTTPS"):
             auth.login("http://example.org", open_browser=False)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    def test_existing_folder_is_made_private(self):
+        folder = auth.credentials_path().parent
+        folder.mkdir(parents=True)
+        os.chmod(folder, 0o755)
+        save()
+        assert stat.S_IMODE(os.stat(folder).st_mode) == 0o700
+
+    def test_unreadable_file_is_moved_aside_not_overwritten(self, capsys):
+        path = auth.credentials_path()
+        path.parent.mkdir(parents=True)
+        path.write_text("{not json")
+        save()
+        assert path.with_name("credentials.json.invalid").read_text() == "{not json"
+        assert auth.load_saved_login(BASE)["access_token"] == "saved"
+        assert "could not read" in capsys.readouterr().err
 
     def test_sign_ins_are_kept_per_site(self):
         save({"access_token": "a", "expires_at": time.time() + 3600})
@@ -129,11 +190,26 @@ class TestLogout:
         assert any("token=saved-refresh" in body for body in revoked)
         assert auth.load_saved_login(BASE) is None
 
-    def test_deletes_even_when_offline(self):
+    @pytest.mark.parametrize("failure", [{"exc": requests.ConnectionError}, {"status_code": 503}])
+    def test_deletes_but_warns_when_revoking_fails(self, capsys, failure):
         save()
         with requests_mock.Mocker() as m:
-            m.post(f"{BASE}/oauth/revoke-token/", exc=requests.ConnectionError)
+            m.post(f"{BASE}/oauth/revoke-token/", **failure)
             assert auth.logout() is True
+        assert auth.load_saved_login(BASE) is None
+        err = capsys.readouterr().err
+        assert "may still be active" in err
+        assert f"{BASE}/settings/tokens/" in err
+
+    def test_revokes_before_deleting(self):
+        save()
+        with requests_mock.Mocker() as m:
+            def revoke(request, context):
+                # The saved sign-in is still there while it is being revoked.
+                assert auth.load_saved_login(BASE) is not None
+                return ""
+            m.post(f"{BASE}/oauth/revoke-token/", text=revoke)
+            auth.logout()
         assert auth.load_saved_login(BASE) is None
 
     def test_not_signed_in(self):
@@ -198,6 +274,84 @@ class TestSavedLoginAuth:
         assert all("Authorization" not in r.headers for r in file_requests)
         assert auth.load_saved_login(BASE) is None
         assert capsys.readouterr().err.count("physionet login") == 1
+
+    def test_parallel_jobs_refresh_once_and_both_stay_signed_in(self):
+        """The server rotates refresh tokens, so a second refresh with the old one would fail."""
+        save({"access_token": "old", "refresh_token": "refresh-1", "expires_at": time.time() - 10})
+        refreshing, finish = threading.Event(), threading.Event()
+        refreshes = []
+
+        def token(request, context):
+            refreshes.append(request.text)
+            if len(refreshes) > 1:
+                context.status_code = 400
+                return {"error": "invalid_grant"}
+            refreshing.set()
+            finish.wait(5)
+            return {**TOKEN, "access_token": "new", "refresh_token": "refresh-2"}
+
+        sent = {}
+
+        def job(name):
+            client = PhysioNetClient()
+            response = client.session.get(f"{BASE}/files/demo/1.0/a.csv")
+            sent[name] = response.request.headers.get("Authorization")
+
+        with requests_mock.Mocker() as m:
+            m.post(f"{BASE}/oauth/token/", json=token)
+            m.get(f"{BASE}/files/demo/1.0/a.csv", text="x")
+            first = threading.Thread(target=job, args=("first",))
+            first.start()
+            assert refreshing.wait(5)
+            second = threading.Thread(target=job, args=("second",))
+            second.start()
+            threading.Event().wait(0.2)  # Let the second job reach the lock.
+            finish.set()
+            first.join(5)
+            second.join(5)
+
+        assert len(refreshes) == 1
+        assert sent == {"first": "Bearer new", "second": "Bearer new"}
+        assert auth.load_saved_login(BASE)["refresh_token"] == "refresh-2"
+
+    def test_a_renewed_sign_in_is_not_forgotten(self):
+        save({"access_token": "new", "refresh_token": "refresh-2", "expires_at": time.time() + 3600})
+        assert auth._forget_login(BASE, access_token="old") is None
+        assert auth.load_saved_login(BASE)["access_token"] == "new"
+
+    def test_refused_token_is_refreshed_and_the_request_retried(self):
+        save()
+        client = PhysioNetClient()
+        with requests_mock.Mocker() as m:
+            m.post(f"{BASE}/oauth/token/", json={**TOKEN, "access_token": "new"})
+            m.get(f"{BASE}/files/demo/1.0/a.csv", [{"status_code": 403}, {"text": "data"}])
+            response = client.session.get(f"{BASE}/files/demo/1.0/a.csv")
+            gets = [r for r in m.request_history if r.method == "GET"]
+        assert response.status_code == 200 and response.text == "data"
+        assert [r.headers["Authorization"] for r in gets] == ["Bearer saved", "Bearer new"]
+
+    def test_signed_out_on_the_website_is_noticed_straight_away(self, capsys):
+        save()
+        client = PhysioNetClient()
+        with requests_mock.Mocker() as m:
+            m.post(f"{BASE}/oauth/token/", status_code=400, json={"error": "invalid_grant"})
+            m.get(f"{BASE}/files/demo/1.0/a.csv", status_code=403)
+            response = client.session.get(f"{BASE}/files/demo/1.0/a.csv")
+        assert response.status_code == 403
+        assert auth.load_saved_login(BASE) is None
+        assert "physionet login" in capsys.readouterr().err
+
+    def test_refused_token_is_only_refreshed_once(self):
+        """A project the account can't access is refused every time; don't refresh for each file."""
+        save()
+        client = PhysioNetClient()
+        with requests_mock.Mocker() as m:
+            m.post(f"{BASE}/oauth/token/", json={**TOKEN, "access_token": "new"})
+            m.get(f"{BASE}/files/demo/1.0/a.csv", status_code=403)
+            for _ in range(3):
+                assert client.session.get(f"{BASE}/files/demo/1.0/a.csv").status_code == 403
+            refreshes = [r for r in m.request_history if r.method == "POST"]
+        assert len(refreshes) == 1
 
 
 class TestCredentialOrder:
