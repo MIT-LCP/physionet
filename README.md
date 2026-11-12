@@ -8,7 +8,7 @@ A collection of tools for working with the [PhysioNet](http://physionet.org/) re
 pip install physionet
 ```
 
-Requires Python 3.9 or later.
+Requires Python 3.10 or later.
 
 ## Command-Line Interface
 
