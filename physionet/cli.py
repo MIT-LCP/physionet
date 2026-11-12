@@ -39,6 +39,19 @@ def main():
     versions_parser.add_argument("slug", help="Project identifier")
     versions_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
 
+    login_parser = subparsers.add_parser(
+        "login", help="Sign in to PhysioNet in your browser, so downloads can use your account"
+    )
+    login_parser.add_argument(
+        "--no-browser", action="store_true", help="Print the sign-in link without opening a browser"
+    )
+    logout_parser = subparsers.add_parser("logout", help="Sign out and delete the saved sign-in")
+    whoami_parser = subparsers.add_parser("whoami", help="Show which PhysioNet account you are signed in as")
+    for auth_parser in (login_parser, logout_parser, whoami_parser):
+        auth_parser.add_argument(
+            "--base-url", default="https://physionet.org", help="PhysioNet site (default: https://physionet.org)"
+        )
+
     # Download subcommand
     download_parser = subparsers.add_parser(
         "download",
@@ -133,6 +146,8 @@ def main():
 
     if args.command in ("search", "show", "versions"):
         return _handle_discovery(args)
+    elif args.command in ("login", "logout", "whoami"):
+        return _handle_auth(args)
     elif args.command == "download":
         return _handle_download(args)
     elif args.command == "validate":
@@ -192,6 +207,42 @@ def _handle_discovery(args):
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+
+def _handle_auth(args):
+    """Sign in, sign out, or show the saved sign-in."""
+    from physionet.auth import LoginError, TOKEN_ENV, credentials_path, load_saved_login, login, logout
+
+    site = args.base_url.rstrip("/")
+    if args.command == "login":
+        try:
+            username = login(site, open_browser=not args.no_browser)
+        except LoginError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            print("\nSign-in cancelled.", file=sys.stderr)
+            return 130
+        account = f" as {username}" if username else ""
+        print(f"Signed in to {site}{account}. Saved to {credentials_path()}")
+        return 0
+
+    if args.command == "logout":
+        if logout(site):
+            print(f"Signed out of {site}.")
+        else:
+            print(f"Not signed in to {site}.")
+        return 0
+
+    record = load_saved_login(site)
+    if record is None:
+        print(f"Not signed in to {site}. Run `physionet login` to sign in.")
+    else:
+        account = record.get("username") or "an unknown account"
+        print(f"Signed in to {site} as {account}.")
+    if os.getenv(TOKEN_ENV):
+        print(f"{TOKEN_ENV} is set, so downloads use that token instead.")
+    return 0
 
 
 def _handle_download(args):

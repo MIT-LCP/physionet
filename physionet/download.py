@@ -2,7 +2,6 @@
 
 import fnmatch
 import hashlib
-import os
 import re
 import sys
 from pathlib import Path
@@ -15,7 +14,8 @@ from urllib3.util.retry import Retry
 
 from physionet.api.client import PhysioNetClient
 from physionet.api.exceptions import ForbiddenError, NotFoundError
-from physionet.api.utils import format_size, get_credentials_from_env
+from physionet.api.utils import format_size
+from physionet.auth import resolve_credentials
 
 S3_BASE_URL = "https://physionet-open.s3.amazonaws.com"
 S3_BUCKET = "physionet-open"
@@ -44,6 +44,7 @@ def download(
     username: Optional[str] = None,
     password: Optional[str] = None,
     base_url: str = "https://physionet.org",
+    token: Optional[str] = None,
     retries: int = 3,
 ) -> Path:
     """
@@ -60,6 +61,8 @@ def download(
         username: PhysioNet username (or use PHYSIONET_USERNAME env var)
         password: PhysioNet password (or use PHYSIONET_PASSWORD env var)
         base_url: PhysioNet base URL
+        token: PhysioNet access token (or use PHYSIONET_TOKEN env var).
+            Without credentials, the sign-in saved by `physionet login` is used.
         retries: Number of retries for transient download errors (0 to disable)
 
     Returns:
@@ -71,12 +74,8 @@ def download(
         DownloadError: If one or more file transfers fail, including access denial
         KeyboardInterrupt: If the download is interrupted
     """
-    if username is None or password is None:
-        env_user, env_pass = get_credentials_from_env()
-        username = username or env_user
-        password = password or env_pass
-
-    client = PhysioNetClient(base_url=base_url, username=username, password=password)
+    username, password, token = resolve_credentials(username, password, token)
+    client = PhysioNetClient(base_url=base_url, username=username, password=password, token=token)
 
     try:
         # Resolve version
@@ -88,8 +87,8 @@ def download(
         except requests.HTTPError as exc:
             if exc.response is not None and exc.response.status_code in (401, 403):
                 raise ForbiddenError(
-                    f"Cannot access {slug} v{version} files. Check your PhysioNet credentials "
-                    "and the project's access requirements."
+                    f"Cannot access {slug} v{version} files. Sign in with `physionet login` (or check "
+                    "your credentials), and check the project's access requirements."
                 ) from exc
             raise
 

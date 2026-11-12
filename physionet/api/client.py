@@ -1,9 +1,10 @@
-from typing import Optional, Dict, Any, Tuple
-from urllib.parse import urljoin, urlsplit
+from typing import Optional, Dict, Any
+from urllib.parse import urljoin
 
 import requests
 from requests.auth import AuthBase, HTTPBasicAuth
 
+from physionet.auth import OriginBearerAuth, SavedLoginAuth, allows_tokens, load_saved_login, origin as _origin
 from .exceptions import (
     PhysioNetAPIError,
     BadRequestError,
@@ -12,13 +13,6 @@ from .exceptions import (
     RateLimitError,
 )
 from .endpoints import ProjectsAPI
-
-
-def _origin(url: str) -> Tuple[str, Optional[str], Optional[int]]:
-    """Return the scheme, host, and effective port of a URL."""
-    parsed = urlsplit(url)
-    default_ports = {"http": 80, "https": 443}
-    return parsed.scheme.lower(), parsed.hostname, parsed.port or default_ports.get(parsed.scheme.lower())
 
 
 class _OriginScopedBasicAuth(AuthBase):
@@ -43,23 +37,44 @@ class PhysioNetClient:
         username: Optional[str] = None,
         password: Optional[str] = None,
         timeout: int = 30,
+        token: Optional[str] = None,
+        use_saved_login: bool = True,
     ):
         """
         Initialize PhysioNet API client.
+
+        Credentials are only sent to base_url. Without a username and
+        password or a token, the client uses the sign-in saved by
+        `physionet login`, if there is one.
 
         Args:
             base_url: Base URL for PhysioNet (default: https://physionet.org)
             username: Optional username for authenticated requests
             password: Optional password for authenticated requests
             timeout: Request timeout in seconds
+            token: Optional personal access token (starting "pnpat_") or OAuth access token
+            use_saved_login: Use the saved sign-in when no other credentials are given
         """
         self.base_url = base_url.rstrip("/")
         self.api_base = f"{self.base_url}/api/v1/"
         self.timeout = timeout
         self.session = requests.Session()
+        # How requests are authenticated: "password", "token", "login", or None.
+        self.auth_method: Optional[str] = None
 
         if username and password:
             self.session.auth = _OriginScopedBasicAuth(self.base_url, username, password)
+            self.auth_method = "password"
+        elif token:
+            if not allows_tokens(self.base_url):
+                raise ValueError(f"Tokens are only sent over HTTPS, not to {self.base_url}")
+            self.session.auth = OriginBearerAuth(self.base_url, token)
+            self.auth_method = "token"
+        elif use_saved_login and allows_tokens(self.base_url):
+            record = load_saved_login(self.base_url)
+            if record is not None:
+                self.session.auth = SavedLoginAuth(self.base_url, record)
+                self.auth_method = "login"
 
         self.session.headers.update({"User-Agent": "PhysioNet-Python-Client/1.0", "Accept": "application/json"})
 

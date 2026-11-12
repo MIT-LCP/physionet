@@ -31,11 +31,12 @@ import requests
 
 from physionet.api.client import PhysioNetClient
 from physionet.api.exceptions import ForbiddenError, NotFoundError
-from physionet.api.utils import get_credentials_from_env
+from physionet.auth import resolve_credentials
 from physionet.download import (
     _download_file,
     _download_file_s3,
     _get_file_manifest,
+    _parse_manifest,
     _resolve_version,
     _select_source,
     _verify_checksum,
@@ -45,6 +46,8 @@ __all__ = ["fetch", "load", "get_cache_dir"]
 
 DEFAULT_BASE_URL = "https://physionet.org"
 MANIFEST_FOLDER = ".manifests"  # Starts with a dot, so it cannot clash with a project slug.
+# Next to each cached checksum list: "open" or "restricted".
+ACCESS_FILE = "ACCESS"
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -85,6 +88,7 @@ def fetch(
     source: str = "auto",
     username: Optional[str] = None,
     password: Optional[str] = None,
+    token: Optional[str] = None,
     base_url: str = DEFAULT_BASE_URL,
     retries: int = 3,
     verify: bool = False,
@@ -101,6 +105,8 @@ def fetch(
         source: Download source - "auto", "physionet", or "aws"
         username: PhysioNet username (or use PHYSIONET_USERNAME env var)
         password: PhysioNet password (or use PHYSIONET_PASSWORD env var)
+        token: PhysioNet access token (or use PHYSIONET_TOKEN env var).
+            Without credentials, the sign-in saved by `physionet login` is used.
         base_url: PhysioNet base URL
         retries: Number of retries for transient download errors
         verify: Re-check the checksum of a file that is already cached, and
@@ -115,7 +121,7 @@ def fetch(
         NotFoundError: If the project or version is not found
         ForbiddenError: If your account cannot access the project
     """
-    with _Remote(base_url, username, password) as remote:
+    with _Remote(base_url, username, password, token) as remote:
         path = _clean_path(path)
         return _fetch(remote, slug, path, [path], version, cache_dir, source, retries, verify)
 
@@ -129,6 +135,7 @@ def load(
     source: str = "auto",
     username: Optional[str] = None,
     password: Optional[str] = None,
+    token: Optional[str] = None,
     base_url: str = DEFAULT_BASE_URL,
     retries: int = 3,
     verify: bool = False,
@@ -163,7 +170,7 @@ def load(
         # The exact name comes last, so a file in another format is reported clearly.
         candidates = [table + extension for extension, _ in TABLE_READERS] + [table]
 
-    with _Remote(base_url, username, password) as remote:
+    with _Remote(base_url, username, password, token) as remote:
         file_path = _fetch(
             remote, slug, table, candidates, version, cache_dir, source, retries, verify, tables_only=True
         )
@@ -173,25 +180,20 @@ def load(
 class _Remote:
     """Connect to PhysioNet only when the cache cannot answer."""
 
-    def __init__(self, base_url: str, username: Optional[str], password: Optional[str]):
-        if username is None or password is None:
-            env_user, env_pass = get_credentials_from_env()
-            username = username or env_user
-            password = password or env_pass
+    def __init__(self, base_url: str, username: Optional[str], password: Optional[str], token: Optional[str]):
         self.base_url = base_url
-        self.username = username
-        self.password = password
+        self.username, self.password, self.token = resolve_credentials(username, password, token)
         self._client: Optional[PhysioNetClient] = None
 
     @property
     def has_credentials(self) -> bool:
-        return bool(self.username and self.password)
+        return self.client.auth_method is not None
 
     @property
     def client(self) -> PhysioNetClient:
         if self._client is None:
             self._client = PhysioNetClient(
-                base_url=self.base_url, username=self.username, password=self.password
+                base_url=self.base_url, username=self.username, password=self.password, token=self.token
             )
         return self._client
 
@@ -223,7 +225,7 @@ def _fetch(
 
     cache = get_cache_dir(cache_dir)
     origin = _origin_folder(remote.base_url)
-    manifest = _manifest(remote, cache, origin, slug, version)
+    manifest, restricted = _manifest(remote, cache, origin, slug, version)
     name, expected_hash = _choose(manifest, requested, candidates, slug, version)
     if tables_only and _reader_for(name) is None:
         raise ValueError(
@@ -260,8 +262,11 @@ def _fetch(
                 f"Could not reach PhysioNet to download {name} from {slug} {version}, "
                 f"and it is not cached at {target}. ({type(exc).__name__})"
             ) from None
-        if remote.has_credentials:
-            # Restricted data: only the owner may read it, even in a shared cache.
+        # Restricted data: only the owner may read it, even in a shared cache.
+        # When it isn't known whether the project is open (a manifest cached by
+        # an older version of this package), assume files fetched with
+        # credentials are restricted.
+        if restricted or (restricted is None and remote.has_credentials):
             os.chmod(partial, stat.S_IRUSR | stat.S_IWUSR)
         os.replace(partial, target)
     finally:
@@ -281,15 +286,49 @@ def _latest_version(remote: _Remote, slug: str) -> str:
         ) from None
 
 
-def _manifest(remote: _Remote, cache: Path, origin: str, slug: str, version: str) -> Dict[str, str]:
-    """Return {path: sha256} for a project version, caching the checksum list."""
+def _download_manifest(remote: _Remote, slug: str, version: str) -> Tuple[List[Tuple[str, str]], bool]:
+    """
+    Return the checksum list and whether the project is restricted.
+
+    The list is first requested without credentials: if that works, the
+    project is open. Only if it is refused are credentials used.
+    """
+    if remote.has_credentials:
+        url = f"{remote.client.base_url}/files/{slug}/{version}/SHA256SUMS.txt"
+        response = remote.client.session.get(url, timeout=remote.client.timeout, auth=_without_credentials)
+        if response.status_code == 200:
+            return _parse_manifest(response.text), False
+        if response.status_code not in (401, 403):
+            response.raise_for_status()
+        return _get_file_manifest(remote.client, slug, version), True
+    return _get_file_manifest(remote.client, slug, version), False
+
+
+def _without_credentials(request):
+    # Passing auth=None would fall back to the session's credentials.
+    return request
+
+
+def _manifest(
+    remote: _Remote, cache: Path, origin: str, slug: str, version: str
+) -> Tuple[Dict[str, str], Optional[bool]]:
+    """
+    Return {path: sha256} for a project version, caching the checksum list,
+    and whether the project is restricted (None if not known).
+    """
     cached = cache / origin / MANIFEST_FOLDER / slug / version / "SHA256SUMS.txt"
+    access = cached.with_name(ACCESS_FILE)
     _refuse_symlinks(cache, cached)
     if cached.is_file():
         entries = _parse_cached_manifest(cached.read_text())
+        _refuse_symlinks(cache, access)
+        try:
+            restricted = {"open": False, "restricted": True}.get(access.read_text().strip())
+        except OSError:
+            restricted = None
     else:
         try:
-            entries = _get_file_manifest(remote.client, slug, version)
+            entries, restricted = _download_manifest(remote, slug, version)
         except (requests.ConnectionError, requests.Timeout) as exc:
             raise ConnectionError(
                 f"Could not reach PhysioNet to get the file list for {slug} {version}, and it is "
@@ -303,17 +342,22 @@ def _manifest(remote: _Remote, cache: Path, origin: str, slug: str, version: str
             if status in (401, 403):
                 raise ForbiddenError(
                     f"Access to {slug} {version} was denied. Restricted datasets need a PhysioNet "
-                    "account with access to the project: pass username and password, or set "
-                    "PHYSIONET_USERNAME and PHYSIONET_PASSWORD."
+                    "account with access to the project: run `physionet login`, set PHYSIONET_TOKEN, "
+                    "or pass username and password."
                 ) from exc
             raise
         cached.parent.mkdir(parents=True, exist_ok=True)
         _refuse_symlinks(cache, cached)
-        partial = cached.with_name(f".{cached.name}.{uuid.uuid4().hex}.part")
-        partial.write_text("".join(f"{checksum}  {name}\n" for name, checksum in entries))
-        os.replace(partial, cached)
+        _refuse_symlinks(cache, access)
+        for path, text in (
+            (access, "restricted\n" if restricted else "open\n"),
+            (cached, "".join(f"{checksum}  {name}\n" for name, checksum in entries)),
+        ):
+            partial = path.with_name(f".{path.name}.{uuid.uuid4().hex}.part")
+            partial.write_text(text)
+            os.replace(partial, path)
     # Skip any entry that could point outside the project folder.
-    return {name: checksum for name, checksum in entries if _is_safe_path(name)}
+    return {name: checksum for name, checksum in entries if _is_safe_path(name)}, restricted
 
 
 def _parse_cached_manifest(text: str) -> List[Tuple[str, str]]:
