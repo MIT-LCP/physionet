@@ -358,16 +358,7 @@ def _download_file(
     Returns:
         Number of bytes downloaded
     """
-    # Mount a retry adapter scoped to this download
-    if retries > 0:
-        retry_strategy = Retry(
-            total=retries,
-            backoff_factor=1,
-            status_forcelist=[502, 503, 504],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
+    _configure_retry_adapter(session, retries)
 
     headers = {}
     mode = "wb"
@@ -379,63 +370,88 @@ def _download_file(
         headers["Range"] = f"bytes={existing_size}-"
         mode = "ab"
 
-    response = session.get(url, headers=headers, stream=True, timeout=60)
+    response = None
+    try:
+        response = session.get(url, headers=headers, stream=True, timeout=60)
 
-    # A server may ignore Range or return a different range. Only append bytes
-    # when a 206 response explicitly starts where the local file ends.
-    restart = False
-    if headers and response.status_code == 416:
-        if _verify_checksum(dest, expected_hash):
+        # A server may ignore Range or return a different range. Only append bytes
+        # when a 206 response explicitly starts where the local file ends.
+        restart = False
+        if headers and response.status_code == 416:
+            if _verify_checksum(dest, expected_hash):
+                return 0
+            restart = True
+        elif headers and response.status_code == 200:
+            mode = "wb"
+        elif headers and response.status_code == 206:
+            restart = not _range_starts_at(response.headers.get("Content-Range", ""), existing_size)
+        elif not headers and response.status_code == 206:
+            raise ValueError("Server returned a partial response without a Range request")
+
+        if restart:
             response.close()
-            return 0
-        restart = True
-    elif headers and response.status_code == 200:
-        mode = "wb"
-    elif headers and response.status_code == 206:
-        restart = not _range_starts_at(response.headers.get("Content-Range", ""), existing_size)
-    elif not headers and response.status_code == 206:
-        response.close()
-        raise ValueError("Server returned a partial response without a Range request")
+            response = session.get(url, stream=True, timeout=60)
+            mode = "wb"
+            if response.status_code == 206:
+                raise ValueError("Server returned a partial response to a full-file request")
 
-    if restart:
-        response.close()
-        response = session.get(url, stream=True, timeout=60)
-        mode = "wb"
-        if response.status_code == 206:
+        if response.status_code == 403:
+            error_msg = response.text or "Access denied"
+            raise ForbiddenError(error_msg)
+
+        response.raise_for_status()
+
+        # Get total size for progress bar
+        content_length = response.headers.get("Content-Length")
+        total = int(content_length) if content_length else None
+        downloaded = 0
+
+        with open(dest, mode) as f:
+            with tqdm(
+                total=total,
+                initial=0,
+                unit="B",
+                unit_scale=True,
+                desc=dest.name,
+                leave=False,
+            ) as pbar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    pbar.update(len(chunk))
+
+        # Verify checksum
+        if not _verify_checksum(dest, expected_hash):
+            dest.unlink()
+            raise ValueError(f"Checksum verification failed for {dest.name}")
+
+        return downloaded
+    finally:
+        if response is not None:
             response.close()
-            raise ValueError("Server returned a partial response to a full-file request")
 
-    if response.status_code == 403:
-        error_msg = response.text or "Access denied"
-        raise ForbiddenError(error_msg)
 
-    response.raise_for_status()
+def _configure_retry_adapter(session: requests.Session, retries: int) -> None:
+    """Configure retries on the session's existing HTTP adapters.
 
-    # Get total size for progress bar
-    content_length = response.headers.get("Content-Length")
-    total = int(content_length) if content_length else None
-    downloaded = 0
+    Updating the adapters in place preserves their connection pools across
+    files in the same dataset download.
+    """
+    if retries > 0:
+        retry_strategy = Retry(
+            total=retries,
+            backoff_factor=1,
+            status_forcelist=[502, 503, 504],
+        )
+    else:
+        retry_strategy = Retry(total=0)
 
-    with open(dest, mode) as f:
-        with tqdm(
-            total=total,
-            initial=0,
-            unit="B",
-            unit_scale=True,
-            desc=dest.name,
-            leave=False,
-        ) as pbar:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-                downloaded += len(chunk)
-                pbar.update(len(chunk))
-
-    # Verify checksum
-    if not _verify_checksum(dest, expected_hash):
-        dest.unlink()
-        raise ValueError(f"Checksum verification failed for {dest.name}")
-
-    return downloaded
+    for prefix in ("https://", "http://"):
+        adapter = session.get_adapter(prefix)
+        if isinstance(adapter, HTTPAdapter):
+            adapter.max_retries = retry_strategy
+        else:
+            session.mount(prefix, HTTPAdapter(max_retries=retry_strategy))
 
 
 def _range_starts_at(content_range: str, expected_start: int) -> bool:
