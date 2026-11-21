@@ -181,6 +181,27 @@ def main():
             help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
         )
 
+    # Doctor subcommand
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Check your setup (sign-in, server, cache) and, optionally, access to a dataset"
+    )
+    doctor_parser.add_argument("slug", nargs="?", help="Also check this dataset (e.g., mimiciv)")
+    doctor_parser.add_argument("--version", help="Dataset version to check (default: latest)")
+    doctor_parser.add_argument("--username", help="PhysioNet username (or PHYSIONET_USERNAME)")
+    doctor_parser.add_argument("--password", help="PhysioNet password (or PHYSIONET_PASSWORD)")
+    doctor_parser.add_argument(
+        "--base-url", default=_default_base_url(),
+        help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
+    )
+    doctor_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
+    doctor_parser.add_argument(
+        "--fix-permissions", action="store_true",
+        help="Make restricted files in the cache readable only by you",
+    )
+    doctor_parser.add_argument(
+        "--no-version-check", action="store_true", help="Do not ask PyPI for the latest release"
+    )
+
     # Validate subcommand
     validate_parser = subparsers.add_parser(
         "validate",
@@ -235,6 +256,8 @@ def main():
         return _handle_download(args)
     elif args.command in ("head", "tables"):
         return _handle_preview(args)
+    elif args.command == "doctor":
+        return _handle_doctor(args)
     elif args.command == "validate":
         return _handle_validate(args)
     elif args.command is None:
@@ -328,6 +351,64 @@ def _handle_auth(args):
     if os.getenv(TOKEN_ENV):
         print(f"{TOKEN_ENV} is set, so downloads use that token instead.")
     return 0
+
+
+_DOCTOR_SYMBOLS = {"ok": "\u2713", "info": "\u2139", "warning": "\u26a0", "problem": "\u2717"}
+
+
+def _handle_doctor(args):
+    """Check the setup, print what is wrong and how to fix it."""
+    from physionet.doctor import environment, fix_permissions, run_checks, summary
+
+    if args.fix_permissions:
+        changed = fix_permissions()
+        for path in changed:
+            print(f"Made readable only by you: {path}")
+        print(f"Fixed {len(changed)} file(s)." if changed else "No restricted files needed fixing.")
+        print()
+
+    username = args.username or os.getenv("PHYSIONET_USERNAME")
+    password = args.password or os.getenv("PHYSIONET_PASSWORD")
+    if username and not password and sys.stdin.isatty() and not args.json:
+        password = _prompt_password() or None
+    try:
+        checks = run_checks(
+            base_url=args.base_url, slug=args.slug, version=args.version, username=username,
+            password=password, check_pypi=not args.no_version_check,
+        )
+    except KeyboardInterrupt:
+        return 130
+    counts = summary(checks)
+    env = environment()
+
+    if args.json:
+        print(json.dumps({"environment": env, "checks": [check.to_dict() for check in checks], **counts}))
+        return 1 if counts["problems"] else 0
+
+    print(f"physionet {env['physionet']} \u00b7 Python {env['python']} \u00b7 {env['os']}")
+    section = None
+    for check in checks:
+        if check.section != section:
+            section = check.section
+            print(f"\n{section}")
+        print(f"  {_DOCTOR_SYMBOLS.get(check.status, '-')} {check.message}")
+        for detail in check.details:
+            print(f"      {detail}")
+        if check.fix and check.status != "ok":
+            print(f"      Fix: {check.fix}")
+
+    problems, warnings = counts["problems"], counts["warnings"]
+    print()
+    if not problems and not warnings:
+        print("No problems found.")
+    else:
+        parts = []
+        if problems:
+            parts.append(f"{problems} problem{'s' if problems != 1 else ''}")
+        if warnings:
+            parts.append(f"{warnings} warning{'s' if warnings != 1 else ''}")
+        print(", ".join(parts) + ".")
+    return 1 if problems else 0
 
 
 def _handle_preview(args):
