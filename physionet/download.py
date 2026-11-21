@@ -19,6 +19,7 @@ from physionet.auth import resolve_credentials
 
 S3_BASE_URL = "https://physionet-open.s3.amazonaws.com"
 S3_BUCKET = "physionet-open"
+_DOWNLOAD_ADAPTER_CACHE_ATTR = "_physionet_download_adapters"
 
 
 class DownloadError(Exception):
@@ -131,6 +132,10 @@ def download(
         skipped = 0
         downloaded = 0
         failures = []
+        download_prefix = None
+        if source_type == "http":
+            download_prefix = f"{source_base.rstrip('/')}/"
+            _configure_retry_adapter(client.session, download_prefix, retries, adapter_prefix=download_prefix)
 
         progress = tqdm(files, desc="Overall", unit="file")
         try:
@@ -150,7 +155,14 @@ def download(
                         size = _download_file_s3(source_base, s3_key, file_dest, expected_hash)
                     else:
                         file_url = f"{source_base}/{filepath}"
-                        size = _download_file(file_url, file_dest, expected_hash, client.session, retries=retries)
+                        size = _download_file(
+                            file_url,
+                            file_dest,
+                            expected_hash,
+                            client.session,
+                            retries=retries,
+                            adapter_prefix=download_prefix,
+                        )
                     total_size += size
                     downloaded += 1
                 except KeyboardInterrupt:
@@ -348,6 +360,7 @@ def _download_file(
     expected_hash: str,
     session: requests.Session,
     retries: int = 3,
+    adapter_prefix: Optional[str] = None,
 ) -> int:
     """
     Download a single file with resume support and checksum verification.
@@ -358,16 +371,7 @@ def _download_file(
     Returns:
         Number of bytes downloaded
     """
-    # Mount a retry adapter scoped to this download
-    if retries > 0:
-        retry_strategy = Retry(
-            total=retries,
-            backoff_factor=1,
-            status_forcelist=[502, 503, 504],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
+    _configure_retry_adapter(session, url, retries, adapter_prefix=adapter_prefix)
 
     headers = {}
     mode = "wb"
@@ -379,63 +383,129 @@ def _download_file(
         headers["Range"] = f"bytes={existing_size}-"
         mode = "ab"
 
-    response = session.get(url, headers=headers, stream=True, timeout=60)
+    response = None
+    try:
+        response = session.get(url, headers=headers, stream=True, timeout=60)
 
-    # A server may ignore Range or return a different range. Only append bytes
-    # when a 206 response explicitly starts where the local file ends.
-    restart = False
-    if headers and response.status_code == 416:
-        if _verify_checksum(dest, expected_hash):
+        # A server may ignore Range or return a different range. Only append bytes
+        # when a 206 response explicitly starts where the local file ends.
+        restart = False
+        if headers and response.status_code == 416:
+            if _verify_checksum(dest, expected_hash):
+                return 0
+            restart = True
+        elif headers and response.status_code == 200:
+            mode = "wb"
+        elif headers and response.status_code == 206:
+            restart = not _range_starts_at(response.headers.get("Content-Range", ""), existing_size)
+        elif not headers and response.status_code == 206:
+            raise ValueError("Server returned a partial response without a Range request")
+
+        if restart:
+            previous_response = response
+            response = None
+            previous_response.close()
+            response = session.get(url, stream=True, timeout=60)
+            mode = "wb"
+            if response.status_code == 206:
+                raise ValueError("Server returned a partial response to a full-file request")
+
+        if response.status_code == 403:
+            error_msg = response.text or "Access denied"
+            raise ForbiddenError(error_msg)
+
+        response.raise_for_status()
+
+        # Get total size for progress bar
+        content_length = response.headers.get("Content-Length")
+        total = int(content_length) if content_length else None
+        downloaded = 0
+
+        with open(dest, mode) as f:
+            with tqdm(
+                total=total,
+                initial=0,
+                unit="B",
+                unit_scale=True,
+                desc=dest.name,
+                leave=False,
+            ) as pbar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    pbar.update(len(chunk))
+
+        # Verify checksum
+        if not _verify_checksum(dest, expected_hash):
+            dest.unlink()
+            raise ValueError(f"Checksum verification failed for {dest.name}")
+
+        return downloaded
+    finally:
+        if response is not None:
             response.close()
-            return 0
-        restart = True
-    elif headers and response.status_code == 200:
-        mode = "wb"
-    elif headers and response.status_code == 206:
-        restart = not _range_starts_at(response.headers.get("Content-Range", ""), existing_size)
-    elif not headers and response.status_code == 206:
-        response.close()
-        raise ValueError("Server returned a partial response without a Range request")
 
-    if restart:
-        response.close()
-        response = session.get(url, stream=True, timeout=60)
-        mode = "wb"
-        if response.status_code == 206:
-            response.close()
-            raise ValueError("Server returned a partial response to a full-file request")
 
-    if response.status_code == 403:
-        error_msg = response.text or "Access denied"
-        raise ForbiddenError(error_msg)
+def _configure_retry_adapter(
+    session: requests.Session,
+    url: str,
+    retries: int,
+    adapter_prefix: Optional[str] = None,
+) -> Optional[HTTPAdapter]:
+    """Mount and cache a retry adapter scoped to the download URL.
 
-    response.raise_for_status()
+    The default adapters belong to the whole session and may also be used by
+    API requests. A dedicated adapter keeps the download retry policy and
+    connection pool separate from those shared adapters.
 
-    # Get total size for progress bar
-    content_length = response.headers.get("Content-Length")
-    total = int(content_length) if content_length else None
-    downloaded = 0
+    A more-specific adapter supplied by the caller remains selected by
+    ``requests``. Only the dataset prefix is mounted, so downloads do not add
+    one adapter entry per file.
 
-    with open(dest, mode) as f:
-        with tqdm(
-            total=total,
-            initial=0,
-            unit="B",
-            unit_scale=True,
-            desc=dest.name,
-            leave=False,
-        ) as pbar:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-                downloaded += len(chunk)
-                pbar.update(len(chunk))
+    ``retries=0`` leaves caller-provided adapters unchanged. If a dedicated
+    adapter was cached by an earlier download, its policy is reset to
+    ``Retry(0, read=False)`` so a later download on the same session does not
+    keep retrying.
+    """
+    prefix = (adapter_prefix or _download_adapter_prefix(url)).rstrip("/") + "/"
+    cache = getattr(session, _DOWNLOAD_ADAPTER_CACHE_ATTR, None)
+    if retries <= 0:
+        if isinstance(cache, dict):
+            adapter = cache.get(prefix)
+            if isinstance(adapter, HTTPAdapter):
+                adapter.max_retries = Retry(total=0, read=False)
+        return None
 
-    # Verify checksum
-    if not _verify_checksum(dest, expected_hash):
-        dest.unlink()
-        raise ValueError(f"Checksum verification failed for {dest.name}")
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(session, _DOWNLOAD_ADAPTER_CACHE_ATTR, cache)
 
-    return downloaded
+    adapter = cache.get(prefix)
+    if adapter is None:
+        adapter = HTTPAdapter(
+            max_retries=Retry(
+                total=retries,
+                backoff_factor=1,
+                status_forcelist=[502, 503, 504],
+            )
+        )
+        cache[prefix] = adapter
+        session.mount(prefix, adapter)
+    else:
+        # The adapter is dedicated to this download prefix, so changing its
+        # policy does not modify a shared adapter or discard its pool.
+        adapter.max_retries = Retry(
+            total=retries,
+            backoff_factor=1,
+            status_forcelist=[502, 503, 504],
+        )
+
+    return adapter
+
+
+def _download_adapter_prefix(url: str) -> str:
+    """Return a path-scoped adapter prefix for a file URL."""
+    return url.rsplit("/", 1)[0]
 
 
 def _range_starts_at(content_range: str, expected_start: int) -> bool:

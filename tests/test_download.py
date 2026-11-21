@@ -11,6 +11,8 @@ download_module = sys.modules["physionet.download"]
 import pytest
 import requests
 import requests_mock as rm
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from physionet.download import (
     DownloadError,
@@ -293,37 +295,187 @@ class TestDownloadFile:
             with pytest.raises(ForbiddenError, match="Access denied"):
                 _download_file("https://example.com/file.txt", dest, "hash", session)
 
-    def test_retry_adapter_mounted(self, tmp_path):
-        """Retry adapter is mounted on the session when retries > 0."""
+    def test_response_closed_after_success(self, tmp_path):
+        content = b"file content"
+        expected_hash = hashlib.sha256(content).hexdigest()
+        dest = tmp_path / "output.txt"
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"Content-Length": str(len(content))}
+        response.iter_content.return_value = [content]
+        session = MagicMock()
+        session.get.return_value = response
+
+        _download_file("https://example.com/file.txt", dest, expected_hash, session)
+
+        response.close.assert_called_once()
+
+    def test_response_closed_after_http_error(self, tmp_path):
+        dest = tmp_path / "output.txt"
+        response = MagicMock()
+        response.status_code = 404
+        response.headers = {}
+        response.raise_for_status.side_effect = requests.HTTPError("Not found")
+        session = MagicMock()
+        session.get.return_value = response
+
+        with pytest.raises(requests.HTTPError, match="Not found"):
+            _download_file("https://example.com/file.txt", dest, "hash", session)
+
+        response.close.assert_called_once()
+
+    def test_restarted_response_is_closed_once_when_retry_request_fails(self, tmp_path):
+        """A closed range response is not closed again if the restart fails."""
+        dest = tmp_path / "output.txt"
+        dest.write_bytes(b"partial")
+        first_response = MagicMock()
+        first_response.status_code = 206
+        first_response.headers = {"Content-Range": "bytes 8-15/16"}
+        session = MagicMock()
+        session.get.side_effect = [first_response, requests.ConnectionError("restart failed")]
+
+        with pytest.raises(requests.ConnectionError, match="restart failed"):
+            _download_file("https://example.com/file.txt", dest, "fakehash", session)
+
+        first_response.close.assert_called_once()
+
+    def test_retry_adapter_is_scoped_to_download_url(self, tmp_path):
+        """Downloads use a dedicated path adapter and leave shared adapters alone."""
         content = b"file content here"
         expected_hash = hashlib.sha256(content).hexdigest()
         dest = tmp_path / "output.txt"
+        url = "https://example.com/files/demo/1.0/file.txt"
+        session = requests.Session()
+        default_adapter = session.get_adapter("https://")
+        shared_adapter = HTTPAdapter(max_retries=Retry(total=7))
+        session.mount("https://example.com/", shared_adapter)
 
         with rm.Mocker() as m:
-            m.get("https://example.com/file.txt", content=content)
-            session = requests.Session()
-            _download_file("https://example.com/file.txt", dest, expected_hash, session, retries=3)
+            m.get(url, content=content)
+            _download_file(
+                url,
+                dest,
+                expected_hash,
+                session,
+                retries=3,
+                adapter_prefix="https://example.com/files/demo/1.0/",
+            )
 
-        # Verify that retry adapter was mounted (requests_mock overrides it for
-        # the actual request, but we can check it was configured)
-        from requests.adapters import HTTPAdapter
-        adapter = session.get_adapter("https://example.com")
+        download_adapter = session.get_adapter(url)
+        assert download_adapter is not shared_adapter
+        assert download_adapter is not default_adapter
+        assert download_adapter.max_retries.total == 3
+        assert 503 in download_adapter.max_retries.status_forcelist
+        assert session.get_adapter("https://example.com/api/v1/") is shared_adapter
+        assert shared_adapter.max_retries.total == 7
+        assert default_adapter.max_retries.total == 0
+
+    def test_retry_adapter_reused_across_files(self, tmp_path):
+        """The dedicated adapter, and therefore its connection pool, is reused."""
+        content = b"file content here"
+        expected_hash = hashlib.sha256(content).hexdigest()
+        first_dest = tmp_path / "first.txt"
+        second_dest = tmp_path / "second.txt"
+        session = requests.Session()
+        prefix = "https://example.com/files/demo/1.0/"
+        first_url = f"{prefix}first.txt"
+        second_url = f"{prefix}sub/second.txt"
+
+        with rm.Mocker() as m:
+            m.get(first_url, content=content)
+            m.get(second_url, content=content)
+            _download_file(first_url, first_dest, expected_hash, session, retries=3, adapter_prefix=prefix)
+            _download_file(second_url, second_dest, expected_hash, session, retries=3, adapter_prefix=prefix)
+
+        adapter = session.get_adapter(first_url)
+        assert session.get_adapter(second_url) is adapter
         assert adapter.max_retries.total == 3
-        assert 503 in adapter.max_retries.status_forcelist
+
+    def test_retries_zero_disables_cached_download_adapter(self, tmp_path):
+        """retries=0 disables a cached download adapter without replacing it."""
+        content = b"file content here"
+        expected_hash = hashlib.sha256(content).hexdigest()
+        prefix = "https://example.com/files/demo/1.0/"
+        first_url = f"{prefix}first.txt"
+        second_url = f"{prefix}second.txt"
+        first_dest = tmp_path / "first.txt"
+        second_dest = tmp_path / "second.txt"
+        session = requests.Session()
+
+        with rm.Mocker() as m:
+            m.get(first_url, content=content)
+            m.get(second_url, content=content)
+            _download_file(first_url, first_dest, expected_hash, session, retries=3, adapter_prefix=prefix)
+            adapter = session.get_adapter(first_url)
+            poolmanager = adapter.poolmanager
+
+            _download_file(second_url, second_dest, expected_hash, session, retries=0, adapter_prefix=prefix)
+
+        assert session.get_adapter(second_url) is adapter
+        assert adapter.poolmanager is poolmanager
+        assert adapter.max_retries.total == 0
+        assert adapter.max_retries.read is False
+
+    def test_more_specific_adapter_is_left_in_place(self, tmp_path):
+        """A caller's more-specific adapter is not replaced or shadowed per file."""
+        content = b"file content here"
+        expected_hash = hashlib.sha256(content).hexdigest()
+        prefix = "https://example.com/files/demo/1.0/"
+        specific_prefix = f"{prefix}special/"
+        first_url = f"{specific_prefix}first.txt"
+        second_url = f"{specific_prefix}sub/second.txt"
+        first_dest = tmp_path / "first.txt"
+        second_dest = tmp_path / "second.txt"
+        session = requests.Session()
+        caller_adapter = HTTPAdapter(max_retries=Retry(total=7))
+        session.mount(specific_prefix, caller_adapter)
+
+        with rm.Mocker() as m:
+            m.get(first_url, content=content)
+            m.get(second_url, content=content)
+            _download_file(first_url, first_dest, expected_hash, session, retries=3, adapter_prefix=prefix)
+            adapter_count = len(session.adapters)
+            _download_file(second_url, second_dest, expected_hash, session, retries=3, adapter_prefix=prefix)
+
+        assert session.get_adapter(first_url) is caller_adapter
+        assert session.get_adapter(second_url) is caller_adapter
+        assert caller_adapter.max_retries.total == 7
+        assert len(session.adapters) == adapter_count
+        assert first_url not in session.adapters
+        assert second_url not in session.adapters
+
+    def test_retries_zero_leaves_existing_policy_untouched(self, tmp_path):
+        """retries=0 does not overwrite a caller-provided adapter policy."""
+        content = b"file content here"
+        expected_hash = hashlib.sha256(content).hexdigest()
+        dest = tmp_path / "file.txt"
+        url = "https://example.com/files/demo/1.0/file.txt"
+        session = requests.Session()
+        existing_adapter = HTTPAdapter(max_retries=Retry(total=5))
+        session.mount("https://example.com/files/demo/1.0/", existing_adapter)
+
+        with rm.Mocker() as m:
+            m.get(url, content=content)
+            _download_file(url, dest, expected_hash, session, retries=0)
+
+        assert session.get_adapter(url) is existing_adapter
+        assert existing_adapter.max_retries.total == 5
 
     def test_retry_adapter_not_mounted_when_disabled(self, tmp_path):
-        """No retry adapter is mounted when retries=0."""
+        """retries=0 leaves the session's default adapter unchanged."""
         dest = tmp_path / "output.txt"
+        url = "https://example.com/file.txt"
+        session = requests.Session()
+        default_adapter = session.get_adapter(url)
 
         with rm.Mocker() as m:
-            m.get("https://example.com/file.txt", status_code=503)
-            session = requests.Session()
+            m.get(url, status_code=503)
             with pytest.raises(Exception):
-                _download_file("https://example.com/file.txt", dest, "fakehash", session, retries=0)
+                _download_file(url, dest, "fakehash", session, retries=0)
 
-        # Default adapter should have no retries configured
-        adapter = session.get_adapter("https://example.com")
-        assert adapter.max_retries.total == 0
+        assert session.get_adapter(url) is default_adapter
+        assert not hasattr(session, "_physionet_download_adapters")
+        assert default_adapter.max_retries.total == 0
 
     def test_resume_416_valid_checksum(self, tmp_path):
         """File already complete (416 Range Not Satisfiable) with valid checksum."""
@@ -636,6 +788,7 @@ class TestDownloadFileInterrupt:
             _download_file("https://example.com/file.txt", dest, "fakehash", mock_session)
 
         assert dest.read_bytes() == b"partial data"
+        mock_response.close.assert_called_once()
 
         remainder = b" and the rest"
         full_content = b"partial data" + remainder
@@ -673,7 +826,7 @@ class TestDownloadInterrupt:
 
         call_count = 0
 
-        def mock_download_file(url, dest, expected_hash, session, retries=3):
+        def mock_download_file(url, dest, expected_hash, session, retries=3, adapter_prefix=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
