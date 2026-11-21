@@ -93,7 +93,7 @@ def test_cli_exits_130_on_interrupt(tmp_path, capsys):
     content = b"expected data"
     manifest = f"{hashlib.sha256(content).hexdigest()}  data.csv"
 
-    def interrupt_file(url, dest, expected_hash, session, retries=3):
+    def interrupt_file(url, dest, expected_hash, session, retries=3, adapter_prefix=None):
         dest.write_bytes(b"partial")
         raise KeyboardInterrupt()
 
