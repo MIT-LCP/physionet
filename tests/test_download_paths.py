@@ -80,3 +80,22 @@ def test_dry_run_warns_about_unsafe_paths_and_lists_only_safe_ones(tmp_path, cap
     assert "escape.txt" not in output.out
     assert "Not downloading 1 file(s)" in output.err
     assert not (tmp_path / "demo-1.0").exists()
+
+
+def test_parallel_download_reports_unsafe_paths_first(tmp_path):
+    # Failures are sorted into manifest order after a parallel download; refused
+    # paths are not in the list being downloaded, and must not break that sort.
+    files = {f"f{i}.csv": f"x{i}".encode() for i in range(6)}
+    manifest = "".join(f"{sha(body)}  {path}\n" for path, body in files.items()) + f"{sha(b'x')}  ../escape.txt\n"
+    with requests_mock.Mocker() as mock:
+        mock.get(f"{BASE}/api/v1/projects/demo/versions/", json=VERSIONS)
+        mock.get(f"{FILES_URL}/SHA256SUMS.txt", text=manifest)
+        mock.get(f"{FILES_URL}/f3.csv", status_code=500)
+        for path, body in files.items():
+            if path != "f3.csv":
+                mock.get(f"{FILES_URL}/{path}", content=body)
+        with pytest.raises(DownloadError) as caught:
+            download("demo", version="1.0", output_dir=str(tmp_path), source="physionet", jobs=4)
+
+    assert [path for path, _ in caught.value.failures] == ["../escape.txt", "f3.csv"]
+    assert caught.value.downloaded == 5
