@@ -297,6 +297,18 @@ def _unavailable_message(access):
     return "PhysioNet file downloads: unavailable; check the project page for details"
 
 
+def _access_command(args):
+    """The `physionet access` command for this slug, version and server."""
+    import shlex
+
+    parts = ["physionet", "access", args.slug]
+    if args.version != "latest":
+        parts += ["--version", args.version]
+    if args.base_url.rstrip("/") != DEFAULT_BASE_URL:
+        parts += ["--base-url", args.base_url]
+    return " ".join(shlex.quote(part) for part in parts)
+
+
 def _handle_access(args):
     """Show the server's current access decision and required steps."""
     import requests
@@ -330,6 +342,15 @@ def _handle_access(args):
             client_options["password"] = password
         with PhysioNetClient(**client_options) as client:
             access = client.projects.get_access_status(args.slug, args.version)
+        if username and not access.authenticated:
+            # The server answered as if no account was given, so the result
+            # says nothing about this account. Fail as for a rejected password
+            # rather than report anonymous access as the account's.
+            print(
+                "The server did not accept your username and password. Check them and try again.",
+                file=sys.stderr,
+            )
+            return 1
         if args.json:
             print(json.dumps(asdict(access)))
         else:
@@ -339,11 +360,8 @@ def _handle_access(args):
                 if access.can_download:
                     print("PhysioNet file downloads: available without signing in")
                 elif access.status == "sign_in_required":
-                    if username:
-                        print("The server did not accept your username and password. Check them and try again.")
-                    else:
-                        print(f"To check your account: physionet access {args.slug} --username YOUR_USERNAME")
-                elif access.status == "unavailable" and access.reason in _UNAVAILABLE_REASONS:
+                    print(f"To check your account: {_access_command(args)} --username YOUR_USERNAME")
+                elif access.status == "unavailable":
                     print(_unavailable_message(access))
                 else:
                     print("PhysioNet file downloads: unavailable for this anonymous request")

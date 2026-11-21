@@ -339,3 +339,42 @@ def test_auth_commands_use_physionet_base_url(monkeypatch, capsys):
     monkeypatch.setenv("PHYSIONET_BASE_URL", "")
     assert run_cli("whoami") == 0
     assert "https://physionet.org" in capsys.readouterr().out
+
+
+def test_access_cli_fails_when_credentials_are_answered_anonymously(capsys):
+    # e.g. the credentials were dropped on the way, so the server never saw them
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, json=ANONYMOUS)
+        assert run_cli("access", "mimiciv", "--username", "researcher", "--password", "secret") == 1
+        human = capsys.readouterr()
+        assert run_cli("access", "mimiciv", "--json", "--username", "researcher", "--password", "secret") == 1
+        machine = capsys.readouterr()
+    for output in (human, machine):
+        assert output.out == ""
+        assert "did not accept your username and password" in output.err
+
+
+def test_access_cli_account_hint_keeps_version_and_server(capsys):
+    url = "http://localhost:8000/api/v1/projects/mimiciv/versions/2.2/access/"
+    with requests_mock.Mocker() as mock:
+        mock.get(url, json=ANONYMOUS)
+        assert run_cli("access", "mimiciv", "--version", "2.2", "--base-url", "http://localhost:8000") == 0
+    hint = ("To check your account: physionet access mimiciv --version 2.2 "
+            "--base-url http://localhost:8000 --username YOUR_USERNAME")
+    assert hint in capsys.readouterr().out
+
+
+def test_access_cli_anonymous_unavailable_does_not_blame_signing_in(capsys):
+    unexplained = {**ANONYMOUS, "status": "unavailable", "reason": "other"}
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, json=unexplained)
+        assert run_cli("access", "mimiciv") == 0
+    out = capsys.readouterr().out
+    assert "unavailable; check the project page for details" in out
+    assert "anonymous request" not in out
+
+
+def test_physionet_base_url_from_the_environment_does_not_leak_into_tests():
+    import os
+
+    assert "PHYSIONET_BASE_URL" not in os.environ
