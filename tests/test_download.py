@@ -132,6 +132,32 @@ class TestSelectSource:
         assert source_type == "http"
         assert source_base == "https://physionet.org/files/demo/1.0"
 
+    def test_auto_uses_another_server_without_checking_the_mirror(self):
+        # The mirror only copies physionet.org, so staging or another
+        # deployment must not get production files from S3.
+        client = MagicMock()
+        client.base_url = "https://staging.example.org"
+        with patch("requests.head") as mock_head:
+            source_type, source_base = _select_source(client, "demo", "1.0", "auto", None)
+        mock_head.assert_not_called()
+        assert source_type == "http"
+        assert source_base == "https://staging.example.org/files/demo/1.0"
+
+    def test_auto_checks_the_mirror_for_physionet_org_in_any_case(self):
+        client = MagicMock()
+        client.base_url = "https://PhysioNet.org"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        with patch("requests.head", return_value=mock_resp) as mock_head:
+            source_type, source_base = _select_source(client, "demo", "1.0", "auto", None)
+        mock_head.assert_called_once()
+        assert source_base == f"{S3_BASE_URL}/demo/1.0"
+
+    def test_aws_source_is_still_used_when_asked_for_with_another_server(self):
+        client = MagicMock()
+        client.base_url = "https://staging.example.org"
+        assert _select_source(client, "demo", "1.0", "aws", None) == ("s3", S3_BUCKET)
+
     def test_auto_s3_check_error_falls_back(self):
         client = MagicMock()
         client.base_url = "https://physionet.org"
@@ -447,6 +473,24 @@ class TestDownload:
         captured = capsys.readouterr()
         assert "file.csv" in captured.out
         assert "demo v1.0" in captured.out
+
+    def test_download_from_another_server_never_uses_the_mirror(self, tmp_path):
+        file_content = b"staging data"
+        manifest = self._make_manifest([("data.csv", file_content)])
+        versions_response = [
+            {"slug": "demo", "title": "Demo", "version": "1.0", "abstract": "", "citation": ""}
+        ]
+        staging = "https://staging.example.org"
+
+        with rm.Mocker() as m:
+            m.get(f"{staging}/api/v1/projects/demo/versions/", json=versions_response)
+            m.get(f"{staging}/files/demo/1.0/SHA256SUMS.txt", text=manifest)
+            m.get(f"{staging}/files/demo/1.0/data.csv", content=file_content)
+
+            download("demo", version="1.0", output_dir=str(tmp_path), base_url=staging)
+
+        assert all(request.url.startswith(staging) for request in m.request_history)
+        assert (tmp_path / "demo-1.0" / "data.csv").read_bytes() == file_content
 
     def test_download_with_filter(self, tmp_path, capsys):
         manifest = self._make_manifest([

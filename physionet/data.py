@@ -102,7 +102,8 @@ def fetch(
         version: Project version. Pin it for reproducible, offline-friendly
             use; leave it out to use the latest version.
         cache_dir: Cache folder (default: see get_cache_dir)
-        source: Download source - "auto", "physionet", or "aws"
+        source: Download source - "auto", "physionet", or "aws". "auto" uses the
+            AWS open data mirror only when base_url is https://physionet.org.
         username: PhysioNet username (or use PHYSIONET_USERNAME env var)
         password: PhysioNet password (or use PHYSIONET_PASSWORD env var)
         token: PhysioNet access token (or use PHYSIONET_TOKEN env var).

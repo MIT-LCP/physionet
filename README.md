@@ -67,7 +67,7 @@ physionet download mimic-iv-demo --include "*.csv" --exclude "*/notes/*"
 
 The `--source` flag controls where files are downloaded from:
 
-- `auto` (default) — tries S3 first, falls back to PhysioNet direct if the dataset is not available on S3
+- `auto` (default) — tries S3 first, falls back to PhysioNet direct if the dataset is not available on S3. The S3 mirror only copies https://physionet.org, so with another `--base-url` (or `PHYSIONET_BASE_URL`), `auto` downloads from that server
 - `physionet` — always downloads from PhysioNet directly
 - `aws` — downloads from S3 using boto3 and the standard AWS credential chain
 
@@ -305,7 +305,8 @@ use `fetch()` and open the returned path yourself.
 Restricted datasets use the same credentials as `download()`: the sign-in
 saved by `physionet login` (or `physionet.login()` in Python), a `token`
 argument or `PHYSIONET_TOKEN`, or a username and password. As with `download()`, `source="auto"` (the default)
-uses the AWS open data mirror when a dataset is on it, and PhysioNet otherwise;
+uses the AWS open data mirror when a dataset is on it, and PhysioNet otherwise
+(with a `base_url` other than https://physionet.org, it uses that server);
 `source="physionet"` or `source="aws"` picks one.
 
 **Pin the version** for reproducible analyses. With a version, a file that has

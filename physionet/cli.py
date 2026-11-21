@@ -105,7 +105,7 @@ def main():
         "--source",
         choices=["auto", "physionet", "aws"],
         default="auto",
-        help="Download source (default: auto)",
+        help="Download source (default: auto; tries the AWS mirror first, for physionet.org only)",
     )
     download_parser.add_argument(
         "--dry-run",
