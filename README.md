@@ -348,6 +348,59 @@ server. Delete the cache folder to clear it.
 | `ConnectionError` | PhysioNet cannot be reached and the file is not cached yet, or no version was given while offline. |
 | `ValueError` | The file is not a supported table format (use `fetch()`), or a name without an extension matches more than one table. |
 
+### Open files with pandas, polars, DuckDB and other tools
+
+Installing the package adds a `physionet://` path type to
+[fsspec](https://filesystem-spec.readthedocs.io/), the file layer used by
+pandas, polars, DuckDB, xarray, Dask and others. Paths are
+`physionet://<slug>/<version>/<path within the project>`:
+
+```python
+import pandas as pd
+
+patients = pd.read_csv("physionet://mimic-iv-demo/2.2/hosp/patients.csv.gz")
+```
+
+Files go through the same cache as `fetch()`: each one is downloaded once,
+checked against the project's SHA256SUMS.txt, and read from the cache after
+that, including offline. Credentials also work the same way (the sign-in saved
+by `physionet login`, `PHYSIONET_TOKEN`, or a username and password), and the
+`fetch()` options can be passed as storage options:
+
+```python
+pd.read_csv(
+    "physionet://mimiciv/3.1/hosp/patients.csv.gz",
+    storage_options={"token": "pnpat_...", "cache_dir": "/data/physionet"},
+)
+```
+
+You can also browse a dataset without downloading it:
+
+```python
+import fsspec
+
+fs = fsspec.filesystem("physionet")
+fs.ls("physionet://mimic-iv-demo/2.2/hosp")      # one folder level
+fs.glob("physionet://mimic-iv-demo/2.2/icu/*")   # file names
+fs.info("physionet://mimic-iv-demo/2.2/hosp/admissions.csv.gz")  # size and SHA-256
+fs.local_path("physionet://mimic-iv-demo/2.2/hosp/admissions.csv.gz")  # cached file path
+```
+
+With DuckDB, register the filesystem first:
+
+```python
+import duckdb
+
+con = duckdb.connect()
+con.register_filesystem(fsspec.filesystem("physionet"))
+con.sql("select count(*) from read_csv_auto('physionet://mimic-iv-demo/2.2/hosp/admissions.csv.gz')")
+```
+
+Use `latest` as the version to get the newest one (looked up online). Pin a
+version for reproducible results. The filesystem is read-only. A missing
+dataset, version or file raises `FileNotFoundError`, and a dataset your
+account cannot access raises `PermissionError`.
+
 ### Download
 
 ```python
