@@ -5,6 +5,7 @@ import sys
 from dataclasses import asdict
 from unittest.mock import patch
 
+import requests
 import requests_mock
 
 from physionet.api import PhysioNetClient
@@ -108,7 +109,7 @@ def test_access_cli_old_server_is_clear_and_fails(capsys):
         assert run_cli("access", "mimiciv", "--json") == 1
     output = capsys.readouterr()
     assert output.out == ""
-    assert "does not yet provide the access-status API" in output.err
+    assert "does not appear to provide the access-status API" in output.err
     assert "large error page" not in output.err
     assert len(output.err) < 250
 
@@ -150,3 +151,97 @@ def test_access_cli_missing_unattended_password_fails_before_request(monkeypatch
     monkeypatch.delenv("PHYSIONET_PASSWORD", raising=False)
     assert run_cli("access", "mimiciv") == 1
     assert "PHYSIONET_PASSWORD" in capsys.readouterr().err
+
+
+ANONYMOUS = {**ACCESS, "authenticated": False, "status": "sign_in_required"}
+ACCESS_URL = "https://physionet.org/api/v1/projects/mimiciv/versions/latest/access/"
+VERSIONS_URL = "https://physionet.org/api/v1/projects/mimiciv/versions/"
+VERSIONS = [{"slug": "mimiciv", "title": "MIMIC-IV", "version": "3.1", "abstract": "", "citation": ""}]
+
+
+def test_access_cli_does_not_send_the_saved_sign_in(capsys):
+    from physionet import auth
+    auth._save_login("https://physionet.org", {
+        "access_token": "saved-access", "refresh_token": "saved-refresh",
+        "expires_at": 9999999999, "username": "researcher",
+    })
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, json=ANONYMOUS)
+        assert run_cli("access", "mimiciv") == 0
+        mock.get(ACCESS_URL, status_code=404, text="<html>Not found</html>")
+        mock.get(VERSIONS_URL, json=VERSIONS)
+        assert run_cli("access", "mimiciv") == 1
+    assert len(mock.request_history) == 3
+    assert all("Authorization" not in request.headers for request in mock.request_history)
+
+
+def test_access_cli_empty_password_fails_before_request(monkeypatch, capsys):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "")
+    with requests_mock.Mocker() as mock:
+        assert run_cli("access", "mimiciv", "--username", "researcher") == 1
+    assert mock.request_history == []
+    assert "No password entered" in capsys.readouterr().err
+
+
+def test_access_cli_ctrl_c_at_password_prompt_exits_130(monkeypatch):
+    def interrupt(prompt):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("getpass.getpass", interrupt)
+    assert run_cli("access", "mimiciv", "--username", "researcher") == 130
+
+
+def test_access_cli_json_404_from_updated_server_is_not_called_missing_api(capsys):
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, status_code=404, json={"detail": "Not found."})
+        mock.get(VERSIONS_URL, json=VERSIONS)
+        assert run_cli("access", "mimiciv") == 1
+    err = capsys.readouterr().err
+    assert "access-status API" not in err
+    assert "Access status not found for mimiciv: Not found." in err
+
+
+def test_access_cli_reports_why_the_project_check_failed(capsys):
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, status_code=404, text="<html>Not found</html>")
+        mock.get(VERSIONS_URL, status_code=503, text="Service Unavailable")
+        assert run_cli("access", "mimiciv") == 1
+    err = capsys.readouterr().err
+    assert "HTTP 503" in err
+    assert "access-status API" not in err
+
+
+def test_access_cli_reports_forbidden_and_network_errors(capsys):
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, status_code=403, json={"detail": "Forbidden by policy"})
+        assert run_cli("access", "mimiciv") == 1
+    assert capsys.readouterr().err == "Access status unavailable: Forbidden by policy\n"
+
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, exc=requests.ConnectionError("connection refused"))
+        assert run_cli("access", "mimiciv") == 1
+    assert "connection refused" in capsys.readouterr().err
+
+
+def test_unexpected_access_payload_raises_api_error(capsys):
+    import pytest
+    from physionet.api.exceptions import PhysioNetAPIError
+
+    partial = {key: value for key, value in ACCESS.items() if key != "project_url"}
+    cases = [
+        {"json": partial},
+        {"text": "<html>Sign in</html>", "headers": {"Content-Type": "text/html"}},
+        {"json": ["not", "an", "object"]},
+    ]
+    for case in cases:
+        with requests_mock.Mocker() as mock:
+            mock.get(ACCESS_URL, **case)
+            with PhysioNetClient(use_saved_login=False) as client:
+                with pytest.raises(PhysioNetAPIError, match="Unexpected response"):
+                    client.projects.get_access_status("mimiciv")
+            assert run_cli("access", "mimiciv") == 1
+        err = capsys.readouterr().err
+        assert err.startswith("Access status unavailable: Unexpected response")
+        assert "KeyError" not in err and "project_url" not in err

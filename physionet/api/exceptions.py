@@ -1,7 +1,10 @@
 class PhysioNetAPIError(Exception):
     """Base exception for PhysioNet API errors."""
 
-    pass
+    def __init__(self, *args, response=None):
+        super().__init__(*args)
+        # The HTTP response that caused the error, if there was one.
+        self.response = response
 
 
 class BadRequestError(PhysioNetAPIError):

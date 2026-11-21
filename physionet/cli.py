@@ -261,21 +261,30 @@ def _handle_auth(args):
 
 def _handle_access(args):
     """Show the server's current access decision and required steps."""
+    import requests
+
     from physionet.api.client import PhysioNetClient
-    from physionet.api.exceptions import NotFoundError
+    from physionet.api.exceptions import NotFoundError, PhysioNetAPIError
 
     username = args.username or os.getenv("PHYSIONET_USERNAME")
     password = args.password or os.getenv("PHYSIONET_PASSWORD")
-    if username and not password:
-        if not sys.stdin.isatty():
-            print(
-                "PhysioNet password required: set PHYSIONET_PASSWORD for unattended use.",
-                file=sys.stderr,
-            )
-            return 1
-        password = getpass.getpass("PhysioNet password: ")
+    # The server only checks an account given by username and password, so the
+    # saved sign-in is never sent here.
+    client_options = dict(base_url=args.base_url, username=username, password=password, use_saved_login=False)
     try:
-        with PhysioNetClient(base_url=args.base_url, username=username, password=password) as client:
+        if username and not password:
+            if not sys.stdin.isatty():
+                print(
+                    "PhysioNet password required: set PHYSIONET_PASSWORD for unattended use.",
+                    file=sys.stderr,
+                )
+                return 1
+            password = getpass.getpass("PhysioNet password: ")
+            if not password:
+                print("No password entered; access was not checked.", file=sys.stderr)
+                return 1
+            client_options["password"] = password
+        with PhysioNetClient(**client_options) as client:
             access = client.projects.get_access_status(args.slug, args.version)
         if args.json:
             print(json.dumps(asdict(access)))
@@ -306,33 +315,51 @@ def _handle_access(args):
                         print(f"  {requirement.label}: {requirement.status} — {requirement.url}")
                 print(f"Project page: {access.project_url}")
         return 0
-    except NotFoundError:
-        # An older server returns the same 404 as an unknown project/version.
-        # Check the existing versions endpoint before explaining the failure.
-        try:
-            with PhysioNetClient(base_url=args.base_url, username=username, password=password) as client:
-                versions = client.projects.list_versions(args.slug)
-        except NotFoundError:
-            message = f"Project not found: {args.slug}."
-        except Exception:
-            message = "Access status unavailable; check the project/version or try again later."
-        else:
-            if not versions:
-                message = f"Project not found: {args.slug}."
-            elif args.version != "latest" and not any(item.version == args.version for item in versions):
-                message = f"Version {args.version} not found for {args.slug}."
-            else:
-                message = (
-                    "This PhysioNet server does not yet provide the access-status API. "
-                    f"See {args.base_url.rstrip('/')}/content/{args.slug}/ for access requirements."
-                )
-        print(message, file=sys.stderr)
+    except NotFoundError as exc:
+        print(_access_not_found_message(args, client_options, exc), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
-    except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+    except (PhysioNetAPIError, requests.RequestException) as exc:
+        print(f"Access status unavailable: {exc}", file=sys.stderr)
         return 1
+
+
+def _access_not_found_message(args, client_options, error):
+    """Explain a 404 from the access-status API.
+
+    The API answers an unknown project or version with a JSON 404. A server
+    without the API answers with its HTML 404 page, which looks the
+    same as an unknown project, so check the versions list to tell them apart.
+    """
+    import requests
+
+    from physionet.api.client import PhysioNetClient
+    from physionet.api.exceptions import NotFoundError, PhysioNetAPIError
+
+    from_api = False
+    if error.response is not None:
+        try:
+            from_api = isinstance(error.response.json(), dict)
+        except ValueError:
+            pass
+    try:
+        with PhysioNetClient(**client_options) as client:
+            versions = client.projects.list_versions(args.slug)
+    except NotFoundError:
+        return f"Project not found: {args.slug}."
+    except (PhysioNetAPIError, requests.RequestException) as exc:
+        return f"Access status not found ({error}), and the project could not be checked: {exc}"
+    if not versions:
+        return f"Project not found: {args.slug}."
+    if args.version != "latest" and not any(item.version == args.version for item in versions):
+        return f"Version {args.version} not found for {args.slug}."
+    if from_api:
+        return f"Access status not found for {args.slug}: {error}"
+    return (
+        "This PhysioNet server does not appear to provide the access-status API. "
+        f"See {args.base_url.rstrip('/')}/content/{args.slug}/ for access requirements."
+    )
 
 
 def _handle_download(args):

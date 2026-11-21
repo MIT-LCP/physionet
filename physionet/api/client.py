@@ -124,15 +124,15 @@ class PhysioNetClient:
                 error_msg = " ".join(body.split())[:300] or response.reason or f"HTTP {response.status_code}"
 
         if response.status_code == 400:
-            raise BadRequestError(error_msg)
+            raise BadRequestError(error_msg, response=response)
         elif response.status_code == 403:
-            raise ForbiddenError(error_msg)
+            raise ForbiddenError(error_msg, response=response)
         elif response.status_code == 404:
-            raise NotFoundError(error_msg)
+            raise NotFoundError(error_msg, response=response)
         elif response.status_code == 429:
-            raise RateLimitError(error_msg)
+            raise RateLimitError(error_msg, response=response)
         else:
-            raise PhysioNetAPIError(f"HTTP {response.status_code}: {error_msg}")
+            raise PhysioNetAPIError(f"HTTP {response.status_code}: {error_msg}", response=response)
 
     def close(self):
         """Close the session."""

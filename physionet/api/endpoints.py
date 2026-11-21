@@ -1,6 +1,7 @@
 from typing import List, Optional, Iterator
 from urllib.parse import quote
 
+from physionet.api.exceptions import PhysioNetAPIError
 from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail, ProjectAccessStatus
 
 
@@ -21,7 +22,13 @@ class ProjectsAPI:
         response = self.client._make_request(
             "GET", f"projects/{slug}/versions/{selected_version}/access/"
         )
-        return ProjectAccessStatus.from_dict(response.json())
+        try:
+            return ProjectAccessStatus.from_dict(response.json())
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PhysioNetAPIError(
+                "Unexpected response from the PhysioNet server for the access status "
+                f"(HTTP {response.status_code}, {response.headers.get('Content-Type') or 'no content type'})."
+            ) from exc
 
     def list_published(self) -> List[PublishedProject]:
         """
