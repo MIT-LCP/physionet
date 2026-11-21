@@ -120,6 +120,10 @@ def main():
         "--password",
         help="PhysioNet password (or set PHYSIONET_PASSWORD env var)",
     )
+    download_parser.add_argument(
+        "--base-url", default=_default_base_url(),
+        help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
+    )
 
     # Validate subcommand
     validate_parser = subparsers.add_parser(
@@ -422,6 +426,7 @@ def _handle_download(args):
     from physionet.download import DownloadError, download
     from physionet.api.exceptions import ForbiddenError, NotFoundError
 
+    project_page = f"{args.base_url.rstrip('/')}/content/{args.slug}/"
     try:
         password = args.password or os.getenv("PHYSIONET_PASSWORD")
         if args.username and not password:
@@ -445,13 +450,14 @@ def _handle_download(args):
             dry_run=args.dry_run,
             username=args.username,
             password=password,
+            base_url=args.base_url,
         )
         return 0
     except DownloadError as e:
         print(f"Download incomplete: {e}", file=sys.stderr)
         if any(isinstance(cause, ForbiddenError) for _, cause in e.failures):
             print(
-                f"Visit https://physionet.org/content/{args.slug}/ for access requirements.",
+                f"Visit {project_page} for access requirements.",
                 file=sys.stderr,
             )
         return 1
@@ -463,7 +469,7 @@ def _handle_download(args):
     except ForbiddenError as e:
         print(f"Access denied: {e}", file=sys.stderr)
         print(
-            f"Visit https://physionet.org/content/{args.slug}/ to request access.",
+            f"Visit {project_page} to request access.",
             file=sys.stderr,
         )
         return 1
