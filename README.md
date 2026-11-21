@@ -231,6 +231,69 @@ can resume it. If the server ignores the resume request, the client downloads th
 file from the beginning. Explicit AWS downloads currently restart incomplete files
 on the next attempt.
 
+### `physionet doctor`
+
+Check everything downloads depend on, and get told how to fix what is wrong:
+
+```bash
+physionet doctor                              # your setup
+physionet doctor mimiciv                      # and a dataset
+physionet doctor mimiciv --username USERNAME  # and your account's access to it
+```
+
+```
+physionet 0.4.0 · Python 3.12.4 · macOS 15.1
+
+Package
+  ✓ physionet 0.4.0 is the latest release
+  ✓ physionet:// paths are registered with fsspec
+
+Server
+  ✓ https://physionet.org reachable (230 ms)
+  ✓ Access status API available
+
+Sign-in
+  ✓ Username and password for researcher accepted (--username and --password)
+
+Downloads
+  ✓ AWS open data mirror reachable
+  ℹ No AWS credentials found; --source aws works only for open datasets
+  ✓ Cache: ~/.cache/physionet (2.3 GB, writable)
+  ✗ 3 restricted file(s) in the cache can be read by other users
+      Fix: physionet doctor --fix-permissions
+
+Dataset mimiciv
+  ✓ Latest version 3.1
+  ℹ Access policy: Credentialed
+  ✗ You can't download mimiciv 3.1 yet
+      CITI training: pending - https://physionet.org/settings/training/
+      Fix: https://physionet.org/content/mimiciv/3.1/
+  ℹ Not on the AWS open data mirror; downloads come from PhysioNet
+
+2 problems.
+```
+
+It checks:
+
+- **Package**: whether a newer release is on PyPI (skip with `--no-version-check`),
+  and that `physionet://` paths are registered.
+- **Server**: that the server (`--base-url` or `PHYSIONET_BASE_URL`) answers, and
+  has the access status API.
+- **Sign-in**: which credentials are used (a username and password, then
+  `PHYSIONET_TOKEN`, then the saved sign-in), whether the server accepts them,
+  and that the saved sign-in file is private.
+- **Downloads**: the AWS mirror, AWS credentials for `--source aws`, the cache
+  folder, and that restricted files in the cache are readable only by you.
+  `--fix-permissions` fixes them.
+- **A dataset**, if you name one: its versions, your access and the steps still
+  needed, and whether it is on the AWS mirror. The server checks an account's
+  access only for a username and password, not for a token or the saved sign-in.
+
+It exits with status 1 if there is a problem. `--json` prints the same report
+for scripts. Reports never include passwords or tokens, only where credentials
+come from and the account name, so you can paste one into a bug report. In
+Python, `physionet.doctor.run_checks()` returns the checks.
+
 ### `physionet validate`
 
 Validate a dataset before submission to PhysioNet. The validator checks for
