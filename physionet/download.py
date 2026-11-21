@@ -274,8 +274,9 @@ def download(
             raise
 
         # Parallel downloads finish in any order; report failures in manifest order.
+        # Failures recorded before downloading (paths not in `files`) stay first.
         order = {filepath: index for index, (filepath, _) in enumerate(files)}
-        failures.sort(key=lambda failure: order[failure[0]])
+        failures.sort(key=lambda failure: order.get(failure[0], -1))
 
         print()
         outcome = "Incomplete" if failures else "Complete"
