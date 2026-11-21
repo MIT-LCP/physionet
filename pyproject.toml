@@ -25,7 +25,12 @@ dependencies = [
     "requests",
     "tqdm",
     "boto3>=1.26.0",
+    "fsspec>=2023.1.0",
 ]
+
+[project.entry-points."fsspec.specs"]
+# Lets pandas, polars, DuckDB and other fsspec users open physionet:// paths.
+physionet = "physionet.fs:PhysioNetFileSystem"
 
 [project.optional-dependencies]
 dev = [
