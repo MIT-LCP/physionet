@@ -217,6 +217,20 @@ def test_error_handling_non_json_response():
         assert "Internal Server Error" in str(exc_info.value)
 
 
+def test_error_handling_html_response_does_not_expose_page():
+    client = PhysioNetClient()
+
+    with requests_mock.Mocker() as m:
+        m.get("https://physionet.org/api/v1/test/", status_code=404,
+              text="<!DOCTYPE html><html>long error page</html>",
+              headers={"Content-Type": "text/html"})
+
+        with pytest.raises(NotFoundError) as exc_info:
+            client._make_request("GET", "test/")
+
+        assert str(exc_info.value) == "HTTP 404"
+
+
 def test_context_manager():
     """Test client works as context manager."""
     with requests_mock.Mocker() as m:

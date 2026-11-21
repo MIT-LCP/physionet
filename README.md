@@ -67,7 +67,7 @@ physionet download mimic-iv-demo --include "*.csv" --exclude "*/notes/*"
 
 The `--source` flag controls where files are downloaded from:
 
-- `auto` (default) — tries S3 first, falls back to PhysioNet direct if the dataset is not available on S3
+- `auto` (default) — tries S3 first, falls back to PhysioNet direct if the dataset is not available on S3. The S3 mirror only copies https://physionet.org, so with another `--base-url` (or `PHYSIONET_BASE_URL`), `auto` downloads from that server
 - `physionet` — always downloads from PhysioNet directly
 - `aws` — downloads from S3 using boto3 and the standard AWS credential chain
 
@@ -105,7 +105,10 @@ physionet logout   # Sign out and delete the saved sign-in
 
 `physionet login` only opens a browser when one can be shown, so over SSH it
 just prints the link. Signing in again replaces, and signs out, the previous
-sign-in.
+sign-in. `login`, `logout` and `whoami` use https://physionet.org unless you
+pass `--base-url` or set `PHYSIONET_BASE_URL`; `physionet download` and
+`physionet access` use the same setting, so a download from another server
+uses the sign-in saved for that server.
 
 You can also see and sign out signed-in devices on PhysioNet, under
 Settings > Tokens.
@@ -117,6 +120,48 @@ as an environment variable:
 ```bash
 export PHYSIONET_TOKEN=pnpat_...
 physionet download mimic-iv --version 3.1
+```
+
+Check your current access before starting a restricted download:
+
+```bash
+physionet access mimiciv --version 3.1 --username user
+physionet access mimiciv --version 3.1 --username user --json
+```
+
+`access` asks the PhysioNet server whether this request can download files
+directly from PhysioNet for the selected version. Without credentials, it
+checks anonymous access and cannot tell whether your account has completed
+credentialing, training, or a data use agreement. Use `--username` to check
+your own account and see any outstanding steps. The command prompts for a
+password in a terminal; for unattended use, set `PHYSIONET_USERNAME`
+and `PHYSIONET_PASSWORD`. The saved sign-in from `physionet login` and
+`PHYSIONET_TOKEN` are not used for this check: the server does not accept
+tokens here, because the answer shows your credentialing and training status.
+Downloads still use them. Omit `--version` to ask the server for its latest
+published version. A successful status lookup exits with `0` even if access
+is pending; check `authenticated` and `can_download` in JSON to understand
+which account, if any, was checked. Cloud access may have separate requirements.
+The response is informational: the server authorizes each file request again
+when it happens. Some projects may allow access through other routes,
+such as events; `can_download` is the server's current decision.
+
+The command requires a PhysioNet server with the access-status API. If you
+use a local or other deployment, pass `--base-url` or set
+`PHYSIONET_BASE_URL`. Until that server is updated, the command says the
+server does not appear to provide the access-status API. In Python, use:
+
+```python
+from physionet import PhysioNetClient
+
+with PhysioNetClient(username="user", password="password") as client:
+    status = client.projects.get_access_status("mimiciv", version="3.1")
+    if status.can_download:
+        print("Ready to download")
+    else:
+        for step in status.requirements:
+            if step.status != "complete":
+                print(step.label, step.status, step.url)
 ```
 
 You can still use your username and password. The CLI prompts for the password
@@ -260,7 +305,8 @@ use `fetch()` and open the returned path yourself.
 Restricted datasets use the same credentials as `download()`: the sign-in
 saved by `physionet login` (or `physionet.login()` in Python), a `token`
 argument or `PHYSIONET_TOKEN`, or a username and password. As with `download()`, `source="auto"` (the default)
-uses the AWS open data mirror when a dataset is on it, and PhysioNet otherwise;
+uses the AWS open data mirror when a dataset is on it, and PhysioNet otherwise
+(with a `base_url` other than https://physionet.org, it uses that server);
 `source="physionet"` or `source="aws"` picks one.
 
 **Pin the version** for reproducible analyses. With a version, a file that has

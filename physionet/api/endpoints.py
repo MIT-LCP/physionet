@@ -1,5 +1,8 @@
 from typing import List, Optional, Iterator
-from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail
+from urllib.parse import quote
+
+from physionet.api.exceptions import PhysioNetAPIError
+from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail, ProjectAccessStatus
 
 
 class ProjectsAPI:
@@ -7,6 +10,25 @@ class ProjectsAPI:
 
     def __init__(self, client):
         self.client = client
+
+    def get_access_status(self, project_slug: str, version: str = "latest") -> ProjectAccessStatus:
+        """Ask the server whether the current user can download this version.
+
+        ``version='latest'`` is resolved on the server. Requirements are
+        informational; each file request remains independently authorized.
+        """
+        slug = quote(project_slug, safe="")
+        selected_version = quote(version, safe="")
+        response = self.client._make_request(
+            "GET", f"projects/{slug}/versions/{selected_version}/access/"
+        )
+        try:
+            return ProjectAccessStatus.from_dict(response.json())
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PhysioNetAPIError(
+                "Unexpected response from the PhysioNet server for the access status "
+                f"(HTTP {response.status_code}, {response.headers.get('Content-Type') or 'no content type'})."
+            ) from exc
 
     def list_published(self) -> List[PublishedProject]:
         """
@@ -69,18 +91,22 @@ class ProjectsAPI:
         """
         endpoint = f"projects/{project_slug}/versions/"
         response = self.client._make_request("GET", endpoint)
-        data = response.json()
-
-        return [
-            ProjectVersion(
-                slug=v["slug"],
-                title=v["title"],
-                version=v["version"],
-                abstract=v["abstract"],
-                citation=v["citation"],
-            )
-            for v in data
-        ]
+        try:
+            return [
+                ProjectVersion(
+                    slug=v["slug"],
+                    title=v["title"],
+                    version=v["version"],
+                    abstract=v["abstract"],
+                    citation=v["citation"],
+                )
+                for v in response.json()
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PhysioNetAPIError(
+                "Unexpected response from the PhysioNet server for the project versions "
+                f"(HTTP {response.status_code}, {response.headers.get('Content-Type') or 'no content type'})."
+            ) from exc
 
     def get_details(self, project_slug: str, version: str) -> ProjectDetail:
         """

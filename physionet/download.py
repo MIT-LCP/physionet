@@ -19,6 +19,9 @@ from physionet.auth import resolve_credentials
 
 S3_BASE_URL = "https://physionet-open.s3.amazonaws.com"
 S3_BUCKET = "physionet-open"
+# The AWS open data mirror copies this server only, so source="auto" tries
+# the mirror only when downloading from it.
+MIRRORED_BASE_URL = "https://physionet.org"
 _DOWNLOAD_ADAPTER_CACHE_ATTR = "_physionet_download_adapters"
 
 
@@ -57,7 +60,9 @@ def download(
         output_dir: Directory to save files to
         include: Glob patterns for files to include
         exclude: Glob patterns for files to exclude
-        source: Download source - "auto", "physionet", or "aws"
+        source: Download source - "auto", "physionet", or "aws". "auto" uses the
+            AWS open data mirror when the dataset is on it and base_url is
+            https://physionet.org, and base_url otherwise.
         dry_run: If True, only print what would be downloaded
         username: PhysioNet username (or use PHYSIONET_USERNAME env var)
         password: PhysioNet password (or use PHYSIONET_PASSWORD env var)
@@ -287,6 +292,11 @@ def _select_source(
 
     if source == "aws":
         return ("s3", S3_BUCKET)
+
+    # The mirror copies physionet.org only. For any other server (staging, a
+    # local or other deployment, a bulk download host), use that server.
+    if client.base_url.lower() != MIRRORED_BASE_URL:
+        return ("http", f"{client.base_url}/files/{slug}/{version}")
 
     # Auto-select: try S3 first, fall back to PhysioNet direct.
     # Not all projects are mirrored to S3, so we probe with a HEAD request.

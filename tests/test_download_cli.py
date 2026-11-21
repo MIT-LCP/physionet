@@ -115,3 +115,36 @@ def test_cli_exits_130_on_interrupt(tmp_path, capsys):
     assert status == 130
     assert "interrupted" in output.err.lower()
     assert (tmp_path / "demo-1.0" / "data.csv").read_bytes() == b"partial"
+
+
+def test_cli_download_uses_base_url_option_and_environment(monkeypatch):
+    monkeypatch.delenv("PHYSIONET_USERNAME", raising=False)
+    monkeypatch.delenv("PHYSIONET_PASSWORD", raising=False)
+    monkeypatch.delenv("PHYSIONET_BASE_URL", raising=False)
+    with patch.object(download_module, "download") as mock_download:
+        with patch.object(sys, "argv", ["physionet", "download", "demo"]):
+            assert main() == 0
+        assert mock_download.call_args.kwargs["base_url"] == "https://physionet.org"
+
+        monkeypatch.setenv("PHYSIONET_BASE_URL", "https://staging.example.org")
+        with patch.object(sys, "argv", ["physionet", "download", "demo"]):
+            assert main() == 0
+        assert mock_download.call_args.kwargs["base_url"] == "https://staging.example.org"
+
+        with patch.object(sys, "argv", ["physionet", "download", "demo", "--base-url", "http://localhost:8000"]):
+            assert main() == 0
+        assert mock_download.call_args.kwargs["base_url"] == "http://localhost:8000"
+
+
+def test_cli_download_access_hint_points_at_chosen_server(monkeypatch, capsys):
+    from physionet.api.exceptions import ForbiddenError
+
+    monkeypatch.delenv("PHYSIONET_USERNAME", raising=False)
+    monkeypatch.delenv("PHYSIONET_PASSWORD", raising=False)
+    monkeypatch.setenv("PHYSIONET_BASE_URL", "https://staging.example.org/")
+    with patch.object(download_module, "download", side_effect=ForbiddenError("denied")):
+        with patch.object(sys, "argv", ["physionet", "download", "demo"]):
+            assert main() == 1
+    err = capsys.readouterr().err
+    assert "Visit https://staging.example.org/content/demo/ to request access." in err
+    assert "physionet.org" not in err

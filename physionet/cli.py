@@ -14,6 +14,14 @@ from physionet.validate import validate_dataset, ValidationConfig
 TERMINAL_MAX_PER_CODE = 10
 
 
+DEFAULT_BASE_URL = "https://physionet.org"
+
+
+def _default_base_url():
+    """The PhysioNet server to use when --base-url is not given."""
+    return os.getenv("PHYSIONET_BASE_URL") or DEFAULT_BASE_URL
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -49,8 +57,21 @@ def main():
     whoami_parser = subparsers.add_parser("whoami", help="Show which PhysioNet account you are signed in as")
     for auth_parser in (login_parser, logout_parser, whoami_parser):
         auth_parser.add_argument(
-            "--base-url", default="https://physionet.org", help="PhysioNet site (default: https://physionet.org)"
+            "--base-url", default=_default_base_url(),
+            help=f"PhysioNet site (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
         )
+    access_parser = subparsers.add_parser(
+        "access", help="Check your current access to a published dataset"
+    )
+    access_parser.add_argument("slug", help="Project identifier (e.g., mimiciv)")
+    access_parser.add_argument("--version", default="latest", help="Project version (default: latest)")
+    access_parser.add_argument("--username", help="PhysioNet username (or PHYSIONET_USERNAME)")
+    access_parser.add_argument("--password", help="PhysioNet password (or PHYSIONET_PASSWORD)")
+    access_parser.add_argument(
+        "--base-url", default=_default_base_url(),
+        help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
+    )
+    access_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
 
     # Download subcommand
     download_parser = subparsers.add_parser(
@@ -84,7 +105,7 @@ def main():
         "--source",
         choices=["auto", "physionet", "aws"],
         default="auto",
-        help="Download source (default: auto)",
+        help="Download source (default: auto; tries the AWS mirror first, for physionet.org only)",
     )
     download_parser.add_argument(
         "--dry-run",
@@ -98,6 +119,10 @@ def main():
     download_parser.add_argument(
         "--password",
         help="PhysioNet password (or set PHYSIONET_PASSWORD env var)",
+    )
+    download_parser.add_argument(
+        "--base-url", default=_default_base_url(),
+        help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
     )
 
     # Validate subcommand
@@ -148,6 +173,8 @@ def main():
         return _handle_discovery(args)
     elif args.command in ("login", "logout", "whoami"):
         return _handle_auth(args)
+    elif args.command == "access":
+        return _handle_access(args)
     elif args.command == "download":
         return _handle_download(args)
     elif args.command == "validate":
@@ -245,11 +272,179 @@ def _handle_auth(args):
     return 0
 
 
+def _prompt_password():
+    """Prompt for a PhysioNet password; Ctrl-D counts as no password."""
+    try:
+        return getpass.getpass("PhysioNet password: ")
+    except EOFError:
+        print(file=sys.stderr)
+        return ""
+
+
+_UNAVAILABLE_REASONS = {
+    "embargoed": "the files are under embargo",
+    "region_blocked": "downloads are not available in your region",
+    "downloads_disabled": "downloads are disabled for this project",
+    "deprecated_files": "the files for this version are deprecated",
+}
+
+
+def _unavailable_message(access):
+    """Describe why the server says files are unavailable, when it says why."""
+    reason = _UNAVAILABLE_REASONS.get(access.reason or "")
+    if reason:
+        return f"PhysioNet file downloads: unavailable; {reason}"
+    return "PhysioNet file downloads: unavailable; check the project page for details"
+
+
+def _access_command(args):
+    """The `physionet access` command for this slug, version and server."""
+    import shlex
+
+    parts = ["physionet", "access", args.slug]
+    if args.version != "latest":
+        parts += ["--version", args.version]
+    if args.base_url.rstrip("/") != DEFAULT_BASE_URL:
+        parts += ["--base-url", args.base_url]
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def _handle_access(args):
+    """Show the server's current access decision and required steps."""
+    import requests
+
+    from physionet.api.client import PhysioNetClient
+    from physionet.api.exceptions import NotFoundError, PhysioNetAPIError
+
+    username = args.username or os.getenv("PHYSIONET_USERNAME")
+    if args.password and not username:
+        print(
+            "--password needs --username (or PHYSIONET_USERNAME); access was not checked.",
+            file=sys.stderr,
+        )
+        return 1
+    password = args.password or os.getenv("PHYSIONET_PASSWORD")
+    # The server only checks an account given by username and password, so the
+    # saved sign-in is never sent here.
+    client_options = dict(base_url=args.base_url, username=username, password=password, use_saved_login=False)
+    try:
+        if username and not password:
+            if not sys.stdin.isatty():
+                print(
+                    "PhysioNet password required: set PHYSIONET_PASSWORD for unattended use.",
+                    file=sys.stderr,
+                )
+                return 1
+            password = _prompt_password()
+            if not password:
+                print("No password entered; access was not checked.", file=sys.stderr)
+                return 1
+            client_options["password"] = password
+        with PhysioNetClient(**client_options) as client:
+            access = client.projects.get_access_status(args.slug, args.version)
+        if username and not access.authenticated:
+            # The server answered as if no account was given, so the result
+            # says nothing about this account. Fail as for a rejected password
+            # rather than report anonymous access as the account's.
+            print(
+                "The server did not accept your username and password. Check them and try again.",
+                file=sys.stderr,
+            )
+            return 1
+        if args.json:
+            print(json.dumps(asdict(access)))
+        else:
+            print(f"{access.slug} v{access.version} [{access.access_policy}]")
+            if not access.authenticated:
+                print("Access check: anonymous; your account access was not checked.")
+                if access.can_download:
+                    print("PhysioNet file downloads: available without signing in")
+                elif access.status == "sign_in_required":
+                    print(f"To check your account: {_access_command(args)} --username YOUR_USERNAME")
+                elif access.status == "unavailable":
+                    print(_unavailable_message(access))
+                else:
+                    print("PhysioNet file downloads: unavailable for this anonymous request")
+                if not access.can_download:
+                    print(f"Project page: {access.project_url}")
+            elif access.can_download:
+                print("PhysioNet file downloads: available to you")
+            elif access.status == "unavailable":
+                print(_unavailable_message(access))
+            else:
+                print("PhysioNet file downloads: not available to you yet")
+            if access.authenticated and not access.can_download:
+                for requirement in access.requirements:
+                    if requirement.status != "complete":
+                        print(f"  {requirement.label}: {requirement.status} — {requirement.url}")
+                print(f"Project page: {access.project_url}")
+        return 0
+    except NotFoundError as exc:
+        # The follow-up versions check runs inside this handler, so the
+        # KeyboardInterrupt clause below would not see a Ctrl-C raised here.
+        try:
+            message = _access_not_found_message(args, client_options, exc)
+        except KeyboardInterrupt:
+            return 130
+        print(message, file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    except (PhysioNetAPIError, requests.RequestException) as exc:
+        response = getattr(exc, "response", None)
+        if username and response is not None and response.status_code == 401:
+            print(
+                "The server did not accept your username and password. Check them and try again.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Access status unavailable: {exc}", file=sys.stderr)
+        return 1
+
+
+def _access_not_found_message(args, client_options, error):
+    """Explain a 404 from the access-status API.
+
+    The API answers an unknown project or version with a JSON 404. A server
+    without the API answers with its HTML 404 page, which looks the
+    same as an unknown project, so check the versions list to tell them apart.
+    """
+    import requests
+
+    from physionet.api.client import PhysioNetClient
+    from physionet.api.exceptions import NotFoundError, PhysioNetAPIError
+
+    from_api = False
+    if error.response is not None:
+        try:
+            from_api = isinstance(error.response.json(), dict)
+        except ValueError:
+            pass
+    try:
+        with PhysioNetClient(**client_options) as client:
+            versions = client.projects.list_versions(args.slug)
+    except NotFoundError:
+        return f"Project not found: {args.slug}."
+    except (PhysioNetAPIError, requests.RequestException) as exc:
+        return f"Access status not found ({error}), and the project could not be checked: {exc}"
+    if not versions:
+        return f"Project not found: {args.slug}."
+    if args.version != "latest" and not any(item.version == args.version for item in versions):
+        return f"Version {args.version} not found for {args.slug}."
+    if from_api:
+        return f"Access status not found for {args.slug}: {error}"
+    return (
+        "This PhysioNet server does not appear to provide the access-status API. "
+        f"See {args.base_url.rstrip('/')}/content/{args.slug}/ for access requirements."
+    )
+
+
 def _handle_download(args):
     """Handle the download subcommand."""
     from physionet.download import DownloadError, download
     from physionet.api.exceptions import ForbiddenError, NotFoundError
 
+    project_page = f"{args.base_url.rstrip('/')}/content/{args.slug}/"
     try:
         password = args.password or os.getenv("PHYSIONET_PASSWORD")
         if args.username and not password:
@@ -259,7 +454,10 @@ def _handle_download(args):
                     file=sys.stderr,
                 )
                 return 1
-            password = getpass.getpass("PhysioNet password: ")
+            password = _prompt_password()
+            if not password:
+                print("No password entered; nothing was downloaded.", file=sys.stderr)
+                return 1
         download(
             slug=args.slug,
             version=args.version,
@@ -270,13 +468,14 @@ def _handle_download(args):
             dry_run=args.dry_run,
             username=args.username,
             password=password,
+            base_url=args.base_url,
         )
         return 0
     except DownloadError as e:
         print(f"Download incomplete: {e}", file=sys.stderr)
         if any(isinstance(cause, ForbiddenError) for _, cause in e.failures):
             print(
-                f"Visit https://physionet.org/content/{args.slug}/ for access requirements.",
+                f"Visit {project_page} for access requirements.",
                 file=sys.stderr,
             )
         return 1
@@ -288,7 +487,7 @@ def _handle_download(args):
     except ForbiddenError as e:
         print(f"Access denied: {e}", file=sys.stderr)
         print(
-            f"Visit https://physionet.org/content/{args.slug}/ to request access.",
+            f"Visit {project_page} to request access.",
             file=sys.stderr,
         )
         return 1
