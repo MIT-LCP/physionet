@@ -132,7 +132,10 @@ checks anonymous access and cannot tell whether your account has completed
 credentialing, training, or a data use agreement. Use `--username` to check
 your own account and see any outstanding steps. The command prompts for a
 password in a terminal; for unattended use, set `PHYSIONET_USERNAME`
-and `PHYSIONET_PASSWORD`. Omit `--version` to ask the server for its latest
+and `PHYSIONET_PASSWORD`. The saved sign-in from `physionet login` and
+`PHYSIONET_TOKEN` are not used for this check: the server does not accept
+tokens here, because the answer shows your credentialing and training status.
+Downloads still use them. Omit `--version` to ask the server for its latest
 published version. A successful status lookup exits with `0` even if access
 is pending; check `authenticated` and `can_download` in JSON to understand
 which account, if any, was checked. Cloud access may have separate requirements.
