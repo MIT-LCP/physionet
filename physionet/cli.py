@@ -8,6 +8,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from physionet.download import MAX_JOBS
 from physionet.validate import validate_dataset, ValidationConfig
 
 # Issues of one kind (such as date warnings) shown per category in the terminal.
@@ -24,8 +25,6 @@ def _default_base_url():
 
 def _jobs(value):
     """Parse --jobs: a whole number from 1 to MAX_JOBS."""
-    from physionet.download import MAX_JOBS
-
     try:
         jobs = int(value)
     except ValueError:
@@ -135,7 +134,7 @@ def main():
     )
     download_parser.add_argument(
         "-j", "--jobs", type=_jobs, default=1, metavar="N",
-        help="Number of files to download at once, from 1 to 8 (default: 1)",
+        help=f"Number of files to download at once, from 1 to {MAX_JOBS} (default: 1)",
     )
     download_parser.add_argument(
         "--base-url", default=_default_base_url(),

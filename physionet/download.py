@@ -3,6 +3,7 @@
 import fnmatch
 import hashlib
 import re
+import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,6 +34,60 @@ MAX_JOBS = 8
 
 class _DownloadCancelled(Exception):
     """A parallel download was stopped because the whole download was interrupted."""
+
+
+class _Cancellation:
+    """Stop parallel downloads, including ones waiting on a slow server.
+
+    Setting it stops each download at its next chunk. A download waiting for
+    data that has not arrived would not reach its next chunk until the read
+    timed out, so set() also shuts down the socket of each response being
+    read, which ends a waiting read at once.
+    """
+
+    def __init__(self):
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._responses = set()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def set(self) -> None:
+        with self._lock:
+            self._event.set()
+            responses = list(self._responses)
+        for response in responses:
+            _abort_response(response)
+
+    def watch(self, response: requests.Response) -> None:
+        """Track a response being read, or end it now if already cancelled."""
+        with self._lock:
+            if not self._event.is_set():
+                self._responses.add(response)
+                return
+        _abort_response(response)
+
+    def unwatch(self, response: requests.Response) -> None:
+        with self._lock:
+            self._responses.discard(response)
+
+
+def _abort_response(response: requests.Response) -> None:
+    """End any read in progress on a streamed response, from another thread.
+
+    Closing the response does not wake a thread blocked reading it, but
+    shutting down its socket does. The socket is found through http.client's
+    response, so this is best effort: if it cannot be found, the download
+    still stops at its next chunk.
+    """
+    fp = getattr(getattr(response.raw, "_fp", None), "fp", None)
+    sock = getattr(getattr(fp, "raw", None), "_sock", None)
+    if isinstance(sock, socket.socket):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
 
 class DownloadError(Exception):
@@ -243,10 +298,11 @@ def _download_in_parallel(files, fetch, record, report_failure, jobs: int, sourc
     threads. boto3 clients are thread-safe but creating them is not, so S3
     downloads share one client. Per-file progress bars are hidden, since
     several at once would overwrite each other. On Ctrl-C, files not started
-    are cancelled and running ones stop at their next chunk, keeping the
-    partial file so a later download resumes it.
+    are cancelled and running ones stop straight away, even while waiting on
+    a slow server. A partial HTTP download is kept, so a later download
+    resumes it; a partial S3 download is downloaded again in full.
     """
-    cancel = threading.Event()
+    cancel = _Cancellation()
     options = {"show_progress": False, "cancel": cancel}
     if source_type == "s3":
         import boto3
@@ -255,6 +311,7 @@ def _download_in_parallel(files, fetch, record, report_failure, jobs: int, sourc
 
     executor = ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="physionet-download")
     progress = tqdm(total=len(files), desc="Overall", unit="file")
+    futures = {}
     try:
         futures = {
             executor.submit(fetch, filepath, expected_hash, **options): filepath
@@ -270,8 +327,11 @@ def _download_in_parallel(files, fetch, record, report_failure, jobs: int, sourc
                 record(filepath, size)
             progress.set_postfix_str(filepath, refresh=False)
             progress.update(1)
-    except BaseException:
+    except BaseException as exc:
+        running = sum(future.running() for future in futures)
         cancel.set()
+        if isinstance(exc, KeyboardInterrupt) and running:
+            print(f"\nStopping {running} running download(s)...", file=sys.stderr)
         raise
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
@@ -404,7 +464,7 @@ def _download_file_s3(
     expected_hash: str,
     s3_client=None,
     show_progress: bool = True,
-    cancel: Optional[threading.Event] = None,
+    cancel: Optional[_Cancellation] = None,
 ) -> int:
     """
     Download a single file from S3 using boto3 with checksum verification.
@@ -465,7 +525,7 @@ def _download_file(
     retries: int = 3,
     adapter_prefix: Optional[str] = None,
     show_progress: bool = True,
-    cancel: Optional[threading.Event] = None,
+    cancel: Optional[_Cancellation] = None,
 ) -> int:
     """
     Download a single file with resume support and checksum verification.
@@ -492,8 +552,15 @@ def _download_file(
         mode = "ab"
 
     response = None
+
+    def get(**kwargs) -> requests.Response:
+        new_response = session.get(url, stream=True, timeout=60, **kwargs)
+        if cancel is not None:
+            cancel.watch(new_response)
+        return new_response
+
     try:
-        response = session.get(url, headers=headers, stream=True, timeout=60)
+        response = get(headers=headers)
 
         # A server may ignore Range or return a different range. Only append bytes
         # when a 206 response explicitly starts where the local file ends.
@@ -512,8 +579,10 @@ def _download_file(
         if restart:
             previous_response = response
             response = None
+            if cancel is not None:
+                cancel.unwatch(previous_response)
             previous_response.close()
-            response = session.get(url, stream=True, timeout=60)
+            response = get()
             mode = "wb"
             if response.status_code == 206:
                 raise ValueError("Server returned a partial response to a full-file request")
@@ -554,6 +623,8 @@ def _download_file(
         return downloaded
     finally:
         if response is not None:
+            if cancel is not None:
+                cancel.unwatch(response)
             response.close()
 
 

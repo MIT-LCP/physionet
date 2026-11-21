@@ -11,7 +11,14 @@ import requests_mock
 
 from importlib import import_module
 from physionet.cli import main
-from physionet.download import MAX_JOBS, DownloadError, _DownloadCancelled, _download_file, download
+from physionet.download import (
+    MAX_JOBS,
+    DownloadError,
+    _Cancellation,
+    _DownloadCancelled,
+    _download_file,
+    download,
+)
 
 # physionet exports a download() function, which hides the submodule as an attribute.
 download_module = import_module("physionet.download")
@@ -88,7 +95,22 @@ def local_server():
             elif self.path.startswith(prefix) and self.path[len(prefix):] in files:
                 path = self.path[len(prefix):]
                 state["on_file"](path)
-                self.send_body(files[path])
+                stall = state.get("stall")
+                if stall is None:
+                    self.send_body(files[path])
+                    return
+                # Send half the file, then go quiet until the test releases it.
+                body = files[path]
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body[: len(body) // 2])
+                self.wfile.flush()
+                stall.wait(30)
+                try:
+                    self.wfile.write(body[len(body) // 2:])
+                except OSError:
+                    pass
             else:
                 self.send_body(b"not found", "text/plain", status=404)
 
@@ -211,7 +233,7 @@ def test_cancelled_file_download_stops_and_keeps_the_partial_file(tmp_path):
     import requests
 
     dest = tmp_path / "big.dat"
-    cancel = threading.Event()
+    cancel = _Cancellation()
     cancel.set()
     with requests_mock.Mocker() as mock:
         mock.get("https://example.com/big.dat", content=b"x" * 50000)
@@ -243,3 +265,50 @@ def test_ctrl_c_during_parallel_download_cancels_files_not_started(tmp_path, cap
     assert len(file_requests) < len(files)
     assert download_threads() == []
     assert "Download interrupted" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sends SIGINT to the test process")
+def test_ctrl_c_stops_files_waiting_on_a_slow_server(tmp_path, local_server, capsys):
+    # Both files stall halfway. Ctrl-C must end the waiting reads rather than
+    # wait up to the 60 s read timeout for a next chunk that never comes.
+    import os
+    import signal
+    import time
+
+    base_url, state = local_server
+    jobs = 2
+    state["files"] = {f"file{i}.dat": b"x" * 20000 for i in range(jobs)}
+    state["stall"] = threading.Event()
+    in_flight = threading.Barrier(jobs + 1, timeout=10)
+    state["on_file"] = lambda path: in_flight.wait()
+
+    def interrupt_once_files_stall():
+        in_flight.wait()
+        time.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    interrupter = threading.Thread(target=interrupt_once_files_stall, daemon=True)
+    interrupter.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            download("demo", version="1.0", output_dir=str(tmp_path), base_url=base_url, jobs=jobs)
+        elapsed = time.monotonic() - started
+    finally:
+        state["stall"].set()
+        interrupter.join(5)
+
+    assert elapsed < 5
+    assert download_threads() == []
+    err = capsys.readouterr().err
+    assert "Stopping 2 running download(s)" in err
+    assert "Download interrupted" in err
+
+
+def test_cancellation_ends_a_response_watched_after_it_was_set():
+    cancel = _Cancellation()
+    cancel.set()
+    response = MagicMock()
+    with patch.object(download_module, "_abort_response") as abort:
+        cancel.watch(response)
+    abort.assert_called_once_with(response)

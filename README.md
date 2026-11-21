@@ -67,8 +67,9 @@ physionet download mitdb --jobs 4
 ```
 
 `--jobs` (or `-j`) takes 1 to 8, and defaults to 1. With more than one, only
-the overall progress bar is shown. Interrupted downloads resume as usual: run
-the same command again.
+the overall progress bar is shown. Ctrl-C stops all running files straight
+away. Run the same command again to continue: files downloaded from PhysioNet
+resume where they stopped, and partly downloaded files from AWS start again.
 
 **Download sources:**
 
