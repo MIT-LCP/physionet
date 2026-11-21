@@ -3,7 +3,10 @@
 import fnmatch
 import hashlib
 import re
+import socket
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from typing import List, Optional, Tuple
 
@@ -23,6 +26,68 @@ S3_BUCKET = "physionet-open"
 # the mirror only when downloading from it.
 MIRRORED_BASE_URL = "https://physionet.org"
 _DOWNLOAD_ADAPTER_CACHE_ATTR = "_physionet_download_adapters"
+# Most files that download() fetches at once. This stays below the default
+# connection pool size (10), so parallel downloads reuse connections, and
+# keeps the load on PhysioNet modest.
+MAX_JOBS = 8
+
+
+class _DownloadCancelled(Exception):
+    """A parallel download was stopped because the whole download was interrupted."""
+
+
+class _Cancellation:
+    """Stop parallel downloads, including ones waiting on a slow server.
+
+    Setting it stops each download at its next chunk. A download waiting for
+    data that has not arrived would not reach its next chunk until the read
+    timed out, so set() also shuts down the socket of each response being
+    read, which ends a waiting read at once.
+    """
+
+    def __init__(self):
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._responses = set()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def set(self) -> None:
+        with self._lock:
+            self._event.set()
+            responses = list(self._responses)
+        for response in responses:
+            _abort_response(response)
+
+    def watch(self, response: requests.Response) -> None:
+        """Track a response being read, or end it now if already cancelled."""
+        with self._lock:
+            if not self._event.is_set():
+                self._responses.add(response)
+                return
+        _abort_response(response)
+
+    def unwatch(self, response: requests.Response) -> None:
+        with self._lock:
+            self._responses.discard(response)
+
+
+def _abort_response(response: requests.Response) -> None:
+    """End any read in progress on a streamed response, from another thread.
+
+    Closing the response does not wake a thread blocked reading it, but
+    shutting down its socket does. The socket is found through http.client's
+    response, so this is best effort: if it cannot be found, the download
+    still stops at its next chunk.
+    """
+    fp = getattr(getattr(response.raw, "_fp", None), "fp", None)
+    sock = getattr(getattr(fp, "raw", None), "_sock", None)
+    if isinstance(sock, socket.socket):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
 
 class DownloadError(Exception):
@@ -50,6 +115,7 @@ def download(
     base_url: str = "https://physionet.org",
     token: Optional[str] = None,
     retries: int = 3,
+    jobs: int = 1,
 ) -> Path:
     """
     Download a PhysioNet project.
@@ -70,6 +136,8 @@ def download(
         token: PhysioNet access token (or use PHYSIONET_TOKEN env var).
             Without credentials, the sign-in saved by `physionet login` is used.
         retries: Number of retries for transient download errors (0 to disable)
+        jobs: Number of files to download at once, from 1 to MAX_JOBS (8). With
+            more than one, only the overall progress bar is shown.
 
     Returns:
         Path to the output directory
@@ -79,7 +147,10 @@ def download(
         ForbiddenError: If access is denied before file transfers start
         DownloadError: If one or more file transfers fail, including access denial
         KeyboardInterrupt: If the download is interrupted
+        ValueError: If jobs is not between 1 and MAX_JOBS
     """
+    if isinstance(jobs, bool) or not isinstance(jobs, int) or not 1 <= jobs <= MAX_JOBS:
+        raise ValueError(f"jobs must be a whole number from 1 to {MAX_JOBS}, not {jobs!r}")
     username, password, token = resolve_credentials(username, password, token)
     client = PhysioNetClient(base_url=base_url, username=username, password=password, token=token)
 
@@ -156,47 +227,69 @@ def download(
             download_prefix = f"{source_base.rstrip('/')}/"
             _configure_retry_adapter(client.session, download_prefix, retries, adapter_prefix=download_prefix)
 
-        progress = tqdm(files, desc="Overall", unit="file")
+        def fetch(filepath: str, expected_hash: str, **options) -> Optional[int]:
+            """Download one file; return its size, or None if it was already there."""
+            file_dest = dest / filepath
+            file_dest.parent.mkdir(parents=True, exist_ok=True)
+
+            # Skip files that already exist and pass checksum
+            if file_dest.exists() and _verify_checksum(file_dest, expected_hash):
+                return None
+
+            if source_type == "s3":
+                s3_key = f"{slug}/{version}/{filepath}"
+                return _download_file_s3(source_base, s3_key, file_dest, expected_hash, **options)
+            file_url = f"{source_base}/{filepath}"
+            return _download_file(
+                file_url,
+                file_dest,
+                expected_hash,
+                client.session,
+                retries=retries,
+                adapter_prefix=download_prefix,
+                **options,
+            )
+
+        def record(filepath: str, size: Optional[int]) -> None:
+            nonlocal skipped, downloaded, total_size
+            if size is None:
+                skipped += 1
+            else:
+                total_size += size
+                downloaded += 1
+
+        def report_failure(filepath: str, error: Exception) -> None:
+            print(f"\nError downloading {filepath}: {error}", file=sys.stderr)
+            failures.append((filepath, error))
+
         try:
-            for filepath, expected_hash in progress:
-                progress.set_postfix_str(filepath, refresh=True)
-                file_dest = dest / filepath
-                file_dest.parent.mkdir(parents=True, exist_ok=True)
-
-                # Skip files that already exist and pass checksum
-                if file_dest.exists() and _verify_checksum(file_dest, expected_hash):
-                    skipped += 1
-                    continue
-
+            if jobs == 1:
+                progress = tqdm(files, desc="Overall", unit="file")
                 try:
-                    if source_type == "s3":
-                        s3_key = f"{slug}/{version}/{filepath}"
-                        size = _download_file_s3(source_base, s3_key, file_dest, expected_hash)
-                    else:
-                        file_url = f"{source_base}/{filepath}"
-                        size = _download_file(
-                            file_url,
-                            file_dest,
-                            expected_hash,
-                            client.session,
-                            retries=retries,
-                            adapter_prefix=download_prefix,
-                        )
-                    total_size += size
-                    downloaded += 1
-                except KeyboardInterrupt:
-                    raise
-                except Exception as e:
-                    print(f"\nError downloading {filepath}: {e}", file=sys.stderr)
-                    failures.append((filepath, e))
+                    for filepath, expected_hash in progress:
+                        progress.set_postfix_str(filepath, refresh=True)
+                        try:
+                            size = fetch(filepath, expected_hash)
+                        except KeyboardInterrupt:
+                            raise
+                        except Exception as e:
+                            report_failure(filepath, e)
+                        else:
+                            record(filepath, size)
+                finally:
+                    progress.close()
+            else:
+                _download_in_parallel(files, fetch, record, report_failure, jobs, source_type)
         except KeyboardInterrupt:
             print(
                 f"\nDownload interrupted. {downloaded} downloaded, {skipped} skipped before interruption.",
                 file=sys.stderr,
             )
             raise
-        finally:
-            progress.close()
+
+        # Parallel downloads finish in any order; report failures in manifest order.
+        order = {filepath: index for index, (filepath, _) in enumerate(files)}
+        failures.sort(key=lambda failure: order[failure[0]])
 
         print()
         outcome = "Incomplete" if failures else "Complete"
@@ -235,6 +328,53 @@ def _unsafe_paths(files: List[Tuple[str, str]], dest: Path) -> List[str]:
         if not _is_safe_path(filepath) or not (dest / filepath).resolve().is_relative_to(root):
             unsafe.append(filepath)
     return unsafe
+
+
+def _download_in_parallel(files, fetch, record, report_failure, jobs: int, source_type: str) -> None:
+    """Run fetch for each file on up to `jobs` threads, recording results as they finish.
+
+    The requests session (and its saved sign-in refresh) is shared by the
+    threads. boto3 clients are thread-safe but creating them is not, so S3
+    downloads share one client. Per-file progress bars are hidden, since
+    several at once would overwrite each other. On Ctrl-C, files not started
+    are cancelled and running ones stop straight away, even while waiting on
+    a slow server. A partial HTTP download is kept, so a later download
+    resumes it; a partial S3 download is downloaded again in full.
+    """
+    cancel = _Cancellation()
+    options = {"show_progress": False, "cancel": cancel}
+    if source_type == "s3":
+        import boto3
+
+        options["s3_client"] = boto3.client("s3")
+
+    executor = ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="physionet-download")
+    progress = tqdm(total=len(files), desc="Overall", unit="file")
+    futures = {}
+    try:
+        futures = {
+            executor.submit(fetch, filepath, expected_hash, **options): filepath
+            for filepath, expected_hash in files
+        }
+        for future in as_completed(futures):
+            filepath = futures[future]
+            try:
+                size = future.result()
+            except Exception as e:
+                report_failure(filepath, e)
+            else:
+                record(filepath, size)
+            progress.set_postfix_str(filepath, refresh=False)
+            progress.update(1)
+    except BaseException as exc:
+        running = sum(future.running() for future in futures)
+        cancel.set()
+        if isinstance(exc, KeyboardInterrupt) and running:
+            print(f"\nStopping {running} running download(s)...", file=sys.stderr)
+        raise
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+        progress.close()
 
 
 def _resolve_version(client: PhysioNetClient, slug: str, version: Optional[str]) -> str:
@@ -361,18 +501,28 @@ def _download_file_s3(
     key: str,
     dest: Path,
     expected_hash: str,
+    s3_client=None,
+    show_progress: bool = True,
+    cancel: Optional[_Cancellation] = None,
 ) -> int:
     """
     Download a single file from S3 using boto3 with checksum verification.
 
     Uses the standard AWS credential chain (env vars, ~/.aws/credentials, IAM roles, etc.).
 
+    Args:
+        s3_client: boto3 S3 client to use (default: create one)
+        show_progress: Show a progress bar for this file
+        cancel: Stop the transfer once this event is set
+
     Returns:
         Number of bytes downloaded
     """
-    import boto3
+    if s3_client is None:
+        import boto3
 
-    s3 = boto3.client("s3")
+        s3_client = boto3.client("s3")
+    s3 = s3_client
 
     # Get object metadata for progress bar
     head = s3.head_object(Bucket=bucket, Key=key)
@@ -386,10 +536,13 @@ def _download_file_s3(
             unit_scale=True,
             desc=dest.name,
             leave=False,
+            disable=not show_progress,
         ) as pbar:
 
             def progress_callback(bytes_amount):
                 nonlocal downloaded
+                if cancel is not None and cancel.is_set():
+                    raise _DownloadCancelled()
                 downloaded += bytes_amount
                 pbar.update(bytes_amount)
 
@@ -410,12 +563,17 @@ def _download_file(
     session: requests.Session,
     retries: int = 3,
     adapter_prefix: Optional[str] = None,
+    show_progress: bool = True,
+    cancel: Optional[_Cancellation] = None,
 ) -> int:
     """
     Download a single file with resume support and checksum verification.
 
     Args:
         retries: Number of retries for transient errors (0 to disable)
+        show_progress: Show a progress bar for this file
+        cancel: Stop between chunks once this event is set, keeping the
+            partial file so a later download can resume it
 
     Returns:
         Number of bytes downloaded
@@ -433,8 +591,15 @@ def _download_file(
         mode = "ab"
 
     response = None
+
+    def get(**kwargs) -> requests.Response:
+        new_response = session.get(url, stream=True, timeout=60, **kwargs)
+        if cancel is not None:
+            cancel.watch(new_response)
+        return new_response
+
     try:
-        response = session.get(url, headers=headers, stream=True, timeout=60)
+        response = get(headers=headers)
 
         # A server may ignore Range or return a different range. Only append bytes
         # when a 206 response explicitly starts where the local file ends.
@@ -453,8 +618,10 @@ def _download_file(
         if restart:
             previous_response = response
             response = None
+            if cancel is not None:
+                cancel.unwatch(previous_response)
             previous_response.close()
-            response = session.get(url, stream=True, timeout=60)
+            response = get()
             mode = "wb"
             if response.status_code == 206:
                 raise ValueError("Server returned a partial response to a full-file request")
@@ -478,8 +645,11 @@ def _download_file(
                 unit_scale=True,
                 desc=dest.name,
                 leave=False,
+                disable=not show_progress,
             ) as pbar:
                 for chunk in response.iter_content(chunk_size=8192):
+                    if cancel is not None and cancel.is_set():
+                        raise _DownloadCancelled()
                     f.write(chunk)
                     downloaded += len(chunk)
                     pbar.update(len(chunk))
@@ -492,6 +662,8 @@ def _download_file(
         return downloaded
     finally:
         if response is not None:
+            if cancel is not None:
+                cancel.unwatch(response)
             response.close()
 
 
