@@ -259,6 +259,31 @@ def _handle_auth(args):
     return 0
 
 
+def _prompt_password():
+    """Prompt for a PhysioNet password; Ctrl-D counts as no password."""
+    try:
+        return getpass.getpass("PhysioNet password: ")
+    except EOFError:
+        print(file=sys.stderr)
+        return ""
+
+
+_UNAVAILABLE_REASONS = {
+    "embargoed": "the files are under embargo",
+    "region_blocked": "downloads are not available in your region",
+    "downloads_disabled": "downloads are disabled for this project",
+    "deprecated_files": "the files for this version are deprecated",
+}
+
+
+def _unavailable_message(access):
+    """Describe why the server says files are unavailable, when it says why."""
+    reason = _UNAVAILABLE_REASONS.get(access.reason or "")
+    if reason:
+        return f"PhysioNet file downloads: unavailable; {reason}"
+    return "PhysioNet file downloads: unavailable; check the project page for details"
+
+
 def _handle_access(args):
     """Show the server's current access decision and required steps."""
     import requests
@@ -279,7 +304,7 @@ def _handle_access(args):
                     file=sys.stderr,
                 )
                 return 1
-            password = getpass.getpass("PhysioNet password: ")
+            password = _prompt_password()
             if not password:
                 print("No password entered; access was not checked.", file=sys.stderr)
                 return 1
@@ -296,9 +321,11 @@ def _handle_access(args):
                     print("PhysioNet file downloads: available without signing in")
                 elif access.status == "sign_in_required":
                     if username:
-                        print("The server did not authenticate your credentials. Check your username and password.")
+                        print("The server did not accept your username and password. Check them and try again.")
                     else:
                         print(f"To check your account: physionet access {args.slug} --username YOUR_USERNAME")
+                elif access.status == "unavailable" and access.reason in _UNAVAILABLE_REASONS:
+                    print(_unavailable_message(access))
                 else:
                     print("PhysioNet file downloads: unavailable for this anonymous request")
                 if not access.can_download:
@@ -306,7 +333,7 @@ def _handle_access(args):
             elif access.can_download:
                 print("PhysioNet file downloads: available to you")
             elif access.status == "unavailable":
-                print("PhysioNet file downloads: unavailable; check the project page for details")
+                print(_unavailable_message(access))
             else:
                 print("PhysioNet file downloads: not available to you yet")
             if access.authenticated and not access.can_download:
@@ -316,12 +343,25 @@ def _handle_access(args):
                 print(f"Project page: {access.project_url}")
         return 0
     except NotFoundError as exc:
-        print(_access_not_found_message(args, client_options, exc), file=sys.stderr)
+        # The follow-up versions check runs inside this handler, so the
+        # KeyboardInterrupt clause below would not see a Ctrl-C raised here.
+        try:
+            message = _access_not_found_message(args, client_options, exc)
+        except KeyboardInterrupt:
+            return 130
+        print(message, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
     except (PhysioNetAPIError, requests.RequestException) as exc:
-        print(f"Access status unavailable: {exc}", file=sys.stderr)
+        response = getattr(exc, "response", None)
+        if username and response is not None and response.status_code == 401:
+            print(
+                "The server did not accept your username and password. Check them and try again.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Access status unavailable: {exc}", file=sys.stderr)
         return 1
 
 
@@ -376,7 +416,10 @@ def _handle_download(args):
                     file=sys.stderr,
                 )
                 return 1
-            password = getpass.getpass("PhysioNet password: ")
+            password = _prompt_password()
+            if not password:
+                print("No password entered; nothing was downloaded.", file=sys.stderr)
+                return 1
         download(
             slug=args.slug,
             version=args.version,

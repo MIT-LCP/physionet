@@ -24,6 +24,9 @@ class ProjectAccessStatus:
     status: str
     requirements: List[AccessRequirement]
     project_url: str
+    # Why files are unavailable, when the server says: "embargoed",
+    # "region_blocked", "downloads_disabled", "deprecated_files" or "other".
+    reason: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "ProjectAccessStatus":
@@ -36,6 +39,7 @@ class ProjectAccessStatus:
             access_policy=data["access_policy"], authenticated=data["authenticated"],
             can_download=data["can_download"], status=data["status"],
             requirements=requirements, project_url=data["project_url"],
+            reason=data.get("reason"),
         )
 
 

@@ -145,8 +145,8 @@ such as events; `can_download` is the server's current decision.
 
 The command requires a PhysioNet server with the access-status API. If you
 use a local or other deployment, pass `--base-url` or set
-`PHYSIONET_BASE_URL`. Until that server is updated, the command reports that
-the status is unavailable. In Python, use:
+`PHYSIONET_BASE_URL`. Until that server is updated, the command says the
+server does not appear to provide the access-status API. In Python, use:
 
 ```python
 from physionet import PhysioNetClient

@@ -15,7 +15,7 @@ from physionet.cli import main
 ACCESS = {
     "slug": "mimiciv", "version": "3.1", "access_policy": "Credentialed",
     "authenticated": True, "can_download": False, "status": "action_required",
-    "project_url": "https://physionet.org/content/mimiciv/3.1/",
+    "project_url": "https://physionet.org/content/mimiciv/3.1/", "reason": None,
     "requirements": [
         {"code": "sign_in", "label": "Sign in to PhysioNet", "status": "complete",
          "url": "https://physionet.org/login/"},
@@ -245,3 +245,56 @@ def test_unexpected_access_payload_raises_api_error(capsys):
         err = capsys.readouterr().err
         assert err.startswith("Access status unavailable: Unexpected response")
         assert "KeyError" not in err and "project_url" not in err
+
+
+def test_access_cli_ctrl_c_during_project_check_exits_130(capsys):
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, status_code=404, text="<html>Not found</html>")
+        mock.get(VERSIONS_URL, exc=KeyboardInterrupt)
+        assert run_cli("access", "mimiciv") == 130
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_access_cli_wrong_password_explains_the_401(capsys):
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, status_code=401, json={"detail": "Invalid username/password."})
+        assert run_cli("access", "mimiciv", "--username", "researcher", "--password", "wrong") == 1
+    err = capsys.readouterr().err
+    assert "did not accept your username and password" in err
+    assert "HTTP 401" not in err
+
+
+def test_access_cli_ctrl_d_at_password_prompt_is_no_password(monkeypatch, capsys):
+    def end_of_input(prompt):
+        raise EOFError
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("getpass.getpass", end_of_input)
+    with requests_mock.Mocker() as mock:
+        assert run_cli("access", "mimiciv", "--username", "researcher") == 1
+        assert run_cli("download", "mimiciv", "--username", "researcher") == 1
+    assert mock.request_history == []
+    err = capsys.readouterr().err
+    assert "No password entered" in err
+    assert "Traceback" not in err
+
+
+def test_access_reason_is_kept_and_explains_unavailable_files(capsys):
+    unavailable = {**ACCESS, "status": "unavailable", "reason": "embargoed"}
+    url = "https://physionet.org/api/v1/projects/mimiciv/versions/3.1/access/"
+    with requests_mock.Mocker() as mock:
+        mock.get(url, json=unavailable)
+        assert run_cli("access", "mimiciv", "--version", "3.1",
+                       "--username", "researcher", "--password", "secret") == 0
+        human = capsys.readouterr().out
+        assert run_cli("access", "mimiciv", "--version", "3.1", "--json",
+                       "--username", "researcher", "--password", "secret") == 0
+        machine = json.loads(capsys.readouterr().out)
+    assert "unavailable; the files are under embargo" in human
+    assert machine["reason"] == "embargoed"
+
+    without_reason = {key: value for key, value in ACCESS.items() if key != "reason"}
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, json=without_reason)
+        with PhysioNetClient(use_saved_login=False) as client:
+            assert client.projects.get_access_status("mimiciv").reason is None
