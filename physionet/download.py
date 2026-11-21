@@ -458,15 +458,24 @@ def _configure_retry_adapter(
     API requests. A dedicated adapter keeps the download retry policy and
     connection pool separate from those shared adapters.
 
-    ``retries=0`` leaves the session unchanged so requests keeps its default
-    ``Retry(0, read=False)`` behavior and any caller-provided policy remains
-    intact.
-    """
-    if retries <= 0:
-        return None
+    A more-specific adapter supplied by the caller remains selected by
+    ``requests``. Only the dataset prefix is mounted, so downloads do not add
+    one adapter entry per file.
 
+    ``retries=0`` leaves caller-provided adapters unchanged. If a dedicated
+    adapter was cached by an earlier download, its policy is reset to
+    ``Retry(0, read=False)`` so a later download on the same session does not
+    keep retrying.
+    """
     prefix = (adapter_prefix or _download_adapter_prefix(url)).rstrip("/") + "/"
     cache = getattr(session, _DOWNLOAD_ADAPTER_CACHE_ATTR, None)
+    if retries <= 0:
+        if isinstance(cache, dict):
+            adapter = cache.get(prefix)
+            if isinstance(adapter, HTTPAdapter):
+                adapter.max_retries = Retry(total=0, read=False)
+        return None
+
     if not isinstance(cache, dict):
         cache = {}
         setattr(session, _DOWNLOAD_ADAPTER_CACHE_ATTR, cache)
@@ -482,8 +491,6 @@ def _configure_retry_adapter(
         )
         cache[prefix] = adapter
         session.mount(prefix, adapter)
-        if session.get_adapter(url) is not adapter:
-            session.mount(url, adapter)
     else:
         # The adapter is dedicated to this download prefix, so changing its
         # policy does not modify a shared adapter or discard its pool.
@@ -492,10 +499,6 @@ def _configure_retry_adapter(
             backoff_factor=1,
             status_forcelist=[502, 503, 504],
         )
-        if session.get_adapter(url) is not adapter:
-            session.mount(prefix, adapter)
-        if session.get_adapter(url) is not adapter:
-            session.mount(url, adapter)
 
     return adapter
 

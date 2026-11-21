@@ -391,6 +391,59 @@ class TestDownloadFile:
         assert session.get_adapter(second_url) is adapter
         assert adapter.max_retries.total == 3
 
+    def test_retries_zero_disables_cached_download_adapter(self, tmp_path):
+        """retries=0 disables a cached download adapter without replacing it."""
+        content = b"file content here"
+        expected_hash = hashlib.sha256(content).hexdigest()
+        prefix = "https://example.com/files/demo/1.0/"
+        first_url = f"{prefix}first.txt"
+        second_url = f"{prefix}second.txt"
+        first_dest = tmp_path / "first.txt"
+        second_dest = tmp_path / "second.txt"
+        session = requests.Session()
+
+        with rm.Mocker() as m:
+            m.get(first_url, content=content)
+            m.get(second_url, content=content)
+            _download_file(first_url, first_dest, expected_hash, session, retries=3, adapter_prefix=prefix)
+            adapter = session.get_adapter(first_url)
+            poolmanager = adapter.poolmanager
+
+            _download_file(second_url, second_dest, expected_hash, session, retries=0, adapter_prefix=prefix)
+
+        assert session.get_adapter(second_url) is adapter
+        assert adapter.poolmanager is poolmanager
+        assert adapter.max_retries.total == 0
+        assert adapter.max_retries.read is False
+
+    def test_more_specific_adapter_is_left_in_place(self, tmp_path):
+        """A caller's more-specific adapter is not replaced or shadowed per file."""
+        content = b"file content here"
+        expected_hash = hashlib.sha256(content).hexdigest()
+        prefix = "https://example.com/files/demo/1.0/"
+        specific_prefix = f"{prefix}special/"
+        first_url = f"{specific_prefix}first.txt"
+        second_url = f"{specific_prefix}sub/second.txt"
+        first_dest = tmp_path / "first.txt"
+        second_dest = tmp_path / "second.txt"
+        session = requests.Session()
+        caller_adapter = HTTPAdapter(max_retries=Retry(total=7))
+        session.mount(specific_prefix, caller_adapter)
+
+        with rm.Mocker() as m:
+            m.get(first_url, content=content)
+            m.get(second_url, content=content)
+            _download_file(first_url, first_dest, expected_hash, session, retries=3, adapter_prefix=prefix)
+            adapter_count = len(session.adapters)
+            _download_file(second_url, second_dest, expected_hash, session, retries=3, adapter_prefix=prefix)
+
+        assert session.get_adapter(first_url) is caller_adapter
+        assert session.get_adapter(second_url) is caller_adapter
+        assert caller_adapter.max_retries.total == 7
+        assert len(session.adapters) == adapter_count
+        assert first_url not in session.adapters
+        assert second_url not in session.adapters
+
     def test_retries_zero_leaves_existing_policy_untouched(self, tmp_path):
         """retries=0 does not overwrite a caller-provided adapter policy."""
         content = b"file content here"
