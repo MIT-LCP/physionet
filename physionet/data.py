@@ -36,6 +36,7 @@ from physionet.download import (
     _download_file,
     _download_file_s3,
     _get_file_manifest,
+    _is_safe_path,
     _parse_manifest,
     _resolve_version,
     _select_source,
@@ -399,13 +400,6 @@ def _clean_path(path: str) -> str:
     if not _is_safe_path(cleaned):
         raise ValueError(f"{path!r} is not a valid path within a project")
     return cleaned
-
-
-def _is_safe_path(path: str) -> bool:
-    parts = PurePosixPath(path).parts
-    return bool(parts) and "\\" not in path and not PurePosixPath(path).is_absolute() and all(
-        part not in ("", ".", "..") for part in parts
-    )
 
 
 def _check_name(value: str, kind: str) -> None:

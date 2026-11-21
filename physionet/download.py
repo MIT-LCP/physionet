@@ -7,7 +7,7 @@ import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import List, Optional, Tuple
 
 import requests
@@ -188,6 +188,22 @@ def download(
         dest = Path(output_dir) / f"{slug}-{version}"
         total_size = 0
 
+        # Failures are reported in checksum-list order, including unsafe paths
+        # that are removed from `files` below.
+        manifest_order = {filepath: index for index, (filepath, _) in enumerate(files)}
+
+        # A checksum list could name paths outside the project folder (from a
+        # compromised or untrusted server). Never write those.
+        unsafe = _unsafe_paths(files, dest)
+        if unsafe:
+            print(
+                f"Not downloading {len(unsafe)} file(s) whose paths would be written outside "
+                f"{dest}: {', '.join(repr(path) for path in unsafe)}",
+                file=sys.stderr,
+            )
+            unsafe_set = set(unsafe)
+            files = [entry for entry in files if entry[0] not in unsafe_set]
+
         if dry_run:
             print(f"Project: {slug} v{version}")
             print(f"Source: {source_label}")
@@ -207,7 +223,9 @@ def download(
 
         skipped = 0
         downloaded = 0
-        failures = []
+        failures = [
+            (path, ValueError("path is outside the project folder; not downloaded")) for path in unsafe
+        ]
         download_prefix = None
         if source_type == "http":
             download_prefix = f"{source_base.rstrip('/')}/"
@@ -274,8 +292,7 @@ def download(
             raise
 
         # Parallel downloads finish in any order; report failures in manifest order.
-        order = {filepath: index for index, (filepath, _) in enumerate(files)}
-        failures.sort(key=lambda failure: order[failure[0]])
+        failures.sort(key=lambda failure: manifest_order[failure[0]])
 
         print()
         outcome = "Incomplete" if failures else "Complete"
@@ -336,6 +353,31 @@ def _download_in_parallel(files, fetch, record, report_failure, jobs: int, sourc
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
         progress.close()
+
+
+def _is_safe_path(path: str) -> bool:
+    """Whether a path from a checksum list stays inside the project folder.
+
+    Rejects absolute paths, "." and ".." parts, empty parts and backslashes.
+    """
+    parts = PurePosixPath(path).parts
+    return bool(parts) and "\\" not in path and not PurePosixPath(path).is_absolute() and all(
+        part not in ("", ".", "..") for part in parts
+    )
+
+
+def _unsafe_paths(files: List[Tuple[str, str]], dest: Path) -> List[str]:
+    """Paths in the checksum list that would be written outside dest.
+
+    A path is unsafe if it is not a plain relative path, or if it resolves
+    outside dest, for example through a symbolic link inside dest.
+    """
+    root = dest.resolve()
+    unsafe = []
+    for filepath, _ in files:
+        if not _is_safe_path(filepath) or not (dest / filepath).resolve().is_relative_to(root):
+            unsafe.append(filepath)
+    return unsafe
 
 
 def _resolve_version(client: PhysioNetClient, slug: str, version: Optional[str]) -> str:
