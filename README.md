@@ -42,6 +42,35 @@ physionet show mimic-iv-demo --version 2.2 --json > project.json
 physionet versions mimic-iv-demo --json > versions.json
 ```
 
+### Preview tables before downloading
+
+`physionet tables` lists a version's tables and their columns, and
+`physionet head` shows a table's first rows. Both read only the start of each
+file, so they take seconds even for multi-gigabyte tables:
+
+```bash
+# Every table and its columns
+physionet tables mimic-iv-demo --version 2.2
+
+# Which tables have a stay_id column? (case-insensitive; exits 1 if none)
+physionet tables mimic-iv-demo --version 2.2 --column stay_id
+
+# Only the tables in one folder, as JSON
+physionet tables mimic-iv-demo --version 2.2 --prefix hosp --json
+
+# The first 10 rows of a table (the extension can be left out)
+physionet head mimic-iv-demo hosp/labevents --version 2.2
+
+# The first 3 rows, as CSV
+physionet head mimic-iv-demo hosp/patients --version 2.2 -n 3 --csv
+```
+
+CSV and TSV files, gzipped or not, can be previewed. Parquet and Excel files
+need the whole file, so read them with `physionet.load()`. Files already in the
+cache are read from there. Restricted datasets use the same sign-in as
+`physionet download`, and both commands take `--username`, `--source` and
+`--base-url`.
+
 ### `physionet download`
 
 Download datasets from PhysioNet:
@@ -347,6 +376,28 @@ server. Delete the cache folder to clear it.
 | `ForbiddenError` | Your account cannot access the dataset, or no credentials were given. |
 | `ConnectionError` | PhysioNet cannot be reached and the file is not cached yet, or no version was given while offline. |
 | `ValueError` | The file is not a supported table format (use `fetch()`), or a name without an extension matches more than one table. |
+
+### Preview a table
+
+`head()` and `tables()` read only the start of each file, like the
+`physionet head` and `physionet tables` commands:
+
+```python
+import physionet
+
+# The first rows of a table, as a DataFrame
+physionet.head("mimic-iv-demo", "hosp/labevents", version="2.2", n=5)
+
+# One row per table: "table", "columns" (a list, or None for Parquet and
+# Excel files) and "error" (why a header could not be read, or None)
+physionet.tables("mimic-iv-demo", version="2.2")
+physionet.tables("mimic-iv-demo", version="2.2", column="stay_id")
+physionet.tables("mimic-iv-demo", version="2.2", prefix="icu")
+```
+
+They take the same `cache_dir`, `source` and credential arguments as `fetch()`.
+`tables()` reads one header per table, and asks for a `prefix` when a version
+has more than 500 tables.
 
 ### Open files with pandas, polars, DuckDB and other tools
 

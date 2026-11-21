@@ -34,6 +34,17 @@ def _jobs(value):
     return jobs
 
 
+def _positive_int(value):
+    """Parse a whole number of at least 1."""
+    try:
+        number = int(value)
+    except ValueError:
+        number = 0
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be a whole number of at least 1, not {value!r}")
+    return number
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -141,6 +152,35 @@ def main():
         help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
     )
 
+    # Preview subcommands
+    head_parser = subparsers.add_parser(
+        "head", help="Show the first rows of a table, reading only the start of the file"
+    )
+    head_parser.add_argument("slug", help="Project identifier (e.g., mimic-iv-demo)")
+    head_parser.add_argument("path", help="Table path, with or without the extension (e.g., hosp/patients)")
+    head_parser.add_argument("-n", "--rows", type=_positive_int, default=10, metavar="N",
+                             help="Number of rows (default: 10)")
+    head_parser.add_argument("--csv", action="store_true", help="Print the rows as CSV")
+    tables_parser = subparsers.add_parser(
+        "tables", help="List a dataset's tables and their columns, reading only each header"
+    )
+    tables_parser.add_argument("slug", help="Project identifier (e.g., mimic-iv-demo)")
+    tables_parser.add_argument("--column", help="Only list tables with this column (case-insensitive)")
+    tables_parser.add_argument("--prefix", help="Only list tables under this folder (e.g., hosp)")
+    tables_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
+    for preview_parser in (head_parser, tables_parser):
+        preview_parser.add_argument("--version", help="Project version (default: latest)")
+        preview_parser.add_argument(
+            "--source", choices=["auto", "physionet", "aws"], default="auto",
+            help="Where to read from (default: auto)",
+        )
+        preview_parser.add_argument("--username", help="PhysioNet username (or PHYSIONET_USERNAME)")
+        preview_parser.add_argument("--password", help="PhysioNet password (or PHYSIONET_PASSWORD)")
+        preview_parser.add_argument(
+            "--base-url", default=_default_base_url(),
+            help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
+        )
+
     # Validate subcommand
     validate_parser = subparsers.add_parser(
         "validate",
@@ -193,6 +233,8 @@ def main():
         return _handle_access(args)
     elif args.command == "download":
         return _handle_download(args)
+    elif args.command in ("head", "tables"):
+        return _handle_preview(args)
     elif args.command == "validate":
         return _handle_validate(args)
     elif args.command is None:
@@ -286,6 +328,72 @@ def _handle_auth(args):
     if os.getenv(TOKEN_ENV):
         print(f"{TOKEN_ENV} is set, so downloads use that token instead.")
     return 0
+
+
+def _handle_preview(args):
+    """Handle the head and tables subcommands."""
+    import shutil
+
+    import requests
+
+    from physionet.api.exceptions import ForbiddenError, NotFoundError, PhysioNetAPIError
+    from physionet.preview import head, tables
+
+    username = args.username or os.getenv("PHYSIONET_USERNAME")
+    password = args.password or os.getenv("PHYSIONET_PASSWORD")
+    if username and not password:
+        if not sys.stdin.isatty():
+            print("PhysioNet password required: set PHYSIONET_PASSWORD for unattended use.", file=sys.stderr)
+            return 1
+        password = _prompt_password()
+        if not password:
+            print("No password entered; nothing was read.", file=sys.stderr)
+            return 1
+    options = dict(source=args.source, username=username, password=password, base_url=args.base_url)
+    try:
+        if args.command == "head":
+            frame = head(args.slug, args.path, args.version, n=args.rows, **options)
+            if args.csv:
+                sys.stdout.write(frame.to_csv(index=False))
+            elif frame.empty and not len(frame.columns):
+                print("The table is empty.")
+            else:
+                width = shutil.get_terminal_size().columns
+                print(frame.to_string(index=False, max_colwidth=40, line_width=width))
+            return 0
+
+        found = tables(args.slug, args.version, column=args.column, prefix=args.prefix, **options)
+        if args.json:
+            print(json.dumps(found.to_dict("records")))
+        elif found.empty:
+            where = f" under {args.prefix}" if args.prefix else ""
+            if args.column:
+                print(f"No tables in {args.slug}{where} have a column named {args.column}.", file=sys.stderr)
+            else:
+                print(f"No tables found in {args.slug}{where}.", file=sys.stderr)
+        else:
+            name_width = min(max(len(name) for name in found["table"]), 48)
+            for row in found.itertuples(index=False):
+                if row.error:
+                    detail = f"(could not read the header: {row.error})"
+                elif row.columns is None:
+                    detail = "(Parquet or Excel; use physionet.load() to read it)"
+                else:
+                    detail = ", ".join(row.columns)
+                print(f"{row.table:<{name_width}}  {detail}")
+        return 1 if found.empty and args.column else 0
+    except KeyboardInterrupt:
+        return 130
+    except (FileNotFoundError, NotFoundError) as exc:
+        print(f"Not found: {exc}", file=sys.stderr)
+        return 1
+    except ForbiddenError as exc:
+        print(f"Access denied: {exc}", file=sys.stderr)
+        print(f"See {args.base_url.rstrip('/')}/content/{args.slug}/ for access requirements.", file=sys.stderr)
+        return 1
+    except (ValueError, ConnectionError, PhysioNetAPIError, requests.RequestException) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
 
 def _prompt_password():
