@@ -105,7 +105,9 @@ physionet logout   # Sign out and delete the saved sign-in
 
 `physionet login` only opens a browser when one can be shown, so over SSH it
 just prints the link. Signing in again replaces, and signs out, the previous
-sign-in.
+sign-in. `login`, `logout` and `whoami` use https://physionet.org unless you
+pass `--base-url` or set `PHYSIONET_BASE_URL`; `physionet access` uses the
+same setting.
 
 You can also see and sign out signed-in devices on PhysioNet, under
 Settings > Tokens.

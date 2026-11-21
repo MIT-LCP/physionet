@@ -14,6 +14,14 @@ from physionet.validate import validate_dataset, ValidationConfig
 TERMINAL_MAX_PER_CODE = 10
 
 
+DEFAULT_BASE_URL = "https://physionet.org"
+
+
+def _default_base_url():
+    """The PhysioNet server to use when --base-url is not given."""
+    return os.getenv("PHYSIONET_BASE_URL") or DEFAULT_BASE_URL
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -49,7 +57,8 @@ def main():
     whoami_parser = subparsers.add_parser("whoami", help="Show which PhysioNet account you are signed in as")
     for auth_parser in (login_parser, logout_parser, whoami_parser):
         auth_parser.add_argument(
-            "--base-url", default="https://physionet.org", help="PhysioNet site (default: https://physionet.org)"
+            "--base-url", default=_default_base_url(),
+            help=f"PhysioNet site (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
         )
     access_parser = subparsers.add_parser(
         "access", help="Check your current access to a published dataset"
@@ -59,8 +68,8 @@ def main():
     access_parser.add_argument("--username", help="PhysioNet username (or PHYSIONET_USERNAME)")
     access_parser.add_argument("--password", help="PhysioNet password (or PHYSIONET_PASSWORD)")
     access_parser.add_argument(
-        "--base-url", default=os.getenv("PHYSIONET_BASE_URL", "https://physionet.org"),
-        help="PhysioNet server URL (or PHYSIONET_BASE_URL)",
+        "--base-url", default=_default_base_url(),
+        help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
     )
     access_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
 
@@ -292,6 +301,12 @@ def _handle_access(args):
     from physionet.api.exceptions import NotFoundError, PhysioNetAPIError
 
     username = args.username or os.getenv("PHYSIONET_USERNAME")
+    if args.password and not username:
+        print(
+            "--password needs --username (or PHYSIONET_USERNAME); access was not checked.",
+            file=sys.stderr,
+        )
+        return 1
     password = args.password or os.getenv("PHYSIONET_PASSWORD")
     # The server only checks an account given by username and password, so the
     # saved sign-in is never sent here.

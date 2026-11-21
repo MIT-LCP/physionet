@@ -298,3 +298,44 @@ def test_access_reason_is_kept_and_explains_unavailable_files(capsys):
         mock.get(ACCESS_URL, json=without_reason)
         with PhysioNetClient(use_saved_login=False) as client:
             assert client.projects.get_access_status("mimiciv").reason is None
+
+
+def test_access_cli_odd_versions_response_is_reported_not_raised(capsys):
+    odd_responses = [
+        {"json": {"results": []}},
+        {"json": [{"slug": "mimiciv"}]},
+    ]
+    for case in odd_responses:
+        with requests_mock.Mocker() as mock:
+            mock.get(ACCESS_URL, status_code=404, text="<html>Not found</html>")
+            mock.get(VERSIONS_URL, **case)
+            assert run_cli("access", "mimiciv") == 1
+        err = capsys.readouterr().err
+        assert "the project could not be checked: Unexpected response" in err
+        assert "Traceback" not in err
+
+
+def test_access_cli_password_without_username_fails_before_request(monkeypatch, capsys):
+    monkeypatch.delenv("PHYSIONET_USERNAME", raising=False)
+    with requests_mock.Mocker() as mock:
+        assert run_cli("access", "mimiciv", "--password", "secret") == 1
+    assert mock.request_history == []
+    assert "--password needs --username" in capsys.readouterr().err
+
+
+def test_password_from_environment_alone_still_allows_anonymous_check(monkeypatch, capsys):
+    monkeypatch.delenv("PHYSIONET_USERNAME", raising=False)
+    monkeypatch.setenv("PHYSIONET_PASSWORD", "secret")
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, json=ANONYMOUS)
+        assert run_cli("access", "mimiciv") == 0
+    assert "Authorization" not in mock.last_request.headers
+
+
+def test_auth_commands_use_physionet_base_url(monkeypatch, capsys):
+    monkeypatch.setenv("PHYSIONET_BASE_URL", "https://staging.example.org")
+    assert run_cli("whoami") == 0
+    assert "staging.example.org" in capsys.readouterr().out
+    monkeypatch.setenv("PHYSIONET_BASE_URL", "")
+    assert run_cli("whoami") == 0
+    assert "https://physionet.org" in capsys.readouterr().out

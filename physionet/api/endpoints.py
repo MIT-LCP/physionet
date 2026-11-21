@@ -91,18 +91,22 @@ class ProjectsAPI:
         """
         endpoint = f"projects/{project_slug}/versions/"
         response = self.client._make_request("GET", endpoint)
-        data = response.json()
-
-        return [
-            ProjectVersion(
-                slug=v["slug"],
-                title=v["title"],
-                version=v["version"],
-                abstract=v["abstract"],
-                citation=v["citation"],
-            )
-            for v in data
-        ]
+        try:
+            return [
+                ProjectVersion(
+                    slug=v["slug"],
+                    title=v["title"],
+                    version=v["version"],
+                    abstract=v["abstract"],
+                    citation=v["citation"],
+                )
+                for v in response.json()
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PhysioNetAPIError(
+                "Unexpected response from the PhysioNet server for the project versions "
+                f"(HTTP {response.status_code}, {response.headers.get('Content-Type') or 'no content type'})."
+            ) from exc
 
     def get_details(self, project_slug: str, version: str) -> ProjectDetail:
         """
