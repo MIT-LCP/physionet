@@ -229,6 +229,7 @@ def test_cli_tables_text_json_and_no_match(tmp_path, capsys):
     assert text.split() == ["icu/icustays.tsv", "subject_id,", "stay_id"]
     assert [record["table"] for record in records] == ["hosp/admissions.csv", "hosp/patients.csv.gz"]
     assert records[1]["columns"] == ["subject_id", "gender"]
+    assert all(record["error"] is None for record in records)  # null in the JSON, not NaN
     assert "No tables in demo have a column named nope." in none
     assert "(Parquet or Excel; use physionet.load() to read it)" in everything
     assert "(could not read the header:" in everything

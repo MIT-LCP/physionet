@@ -374,9 +374,9 @@ def _handle_preview(args):
         else:
             name_width = min(max(len(name) for name in found["table"]), 48)
             for row in found.itertuples(index=False):
-                if row.error:
+                if isinstance(row.error, str):
                     detail = f"(could not read the header: {row.error})"
-                elif row.columns is None:
+                elif not isinstance(row.columns, list):
                     detail = "(Parquet or Excel; use physionet.load() to read it)"
                 else:
                     detail = ", ".join(row.columns)

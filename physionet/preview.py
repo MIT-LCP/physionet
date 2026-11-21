@@ -160,7 +160,9 @@ def tables(
         with ThreadPoolExecutor(max_workers=_HEADER_THREADS) as executor:
             rows = list(executor.map(header, names))
 
-    result = pd.DataFrame(rows, columns=["table", "columns", "error"])
+    # object dtype keeps None as None; pandas 3 would store the text columns as
+    # strings and turn None into NaN.
+    result = pd.DataFrame(rows, columns=["table", "columns", "error"], dtype=object)
     if column is not None:
         wanted = column.lower()
         keep = result["columns"].map(lambda cols: cols is not None and wanted in (c.lower() for c in cols))
