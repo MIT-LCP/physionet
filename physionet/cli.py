@@ -22,6 +22,19 @@ def _default_base_url():
     return os.getenv("PHYSIONET_BASE_URL") or DEFAULT_BASE_URL
 
 
+def _jobs(value):
+    """Parse --jobs: a whole number from 1 to MAX_JOBS."""
+    from physionet.download import MAX_JOBS
+
+    try:
+        jobs = int(value)
+    except ValueError:
+        jobs = None
+    if jobs is None or not 1 <= jobs <= MAX_JOBS:
+        raise argparse.ArgumentTypeError(f"must be a whole number from 1 to {MAX_JOBS}, not {value!r}")
+    return jobs
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -119,6 +132,10 @@ def main():
     download_parser.add_argument(
         "--password",
         help="PhysioNet password (or set PHYSIONET_PASSWORD env var)",
+    )
+    download_parser.add_argument(
+        "-j", "--jobs", type=_jobs, default=1, metavar="N",
+        help="Number of files to download at once, from 1 to 8 (default: 1)",
     )
     download_parser.add_argument(
         "--base-url", default=_default_base_url(),
@@ -469,6 +486,7 @@ def _handle_download(args):
             username=args.username,
             password=password,
             base_url=args.base_url,
+            jobs=args.jobs,
         )
         return 0
     except DownloadError as e:

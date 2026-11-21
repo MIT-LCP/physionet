@@ -61,7 +61,14 @@ physionet download mimic-iv-demo --dry-run
 
 # Download only specific files
 physionet download mimic-iv-demo --include "*.csv" --exclude "*/notes/*"
+
+# Download 4 files at once (helps most for datasets with many small files)
+physionet download mitdb --jobs 4
 ```
+
+`--jobs` (or `-j`) takes 1 to 8, and defaults to 1. With more than one, only
+the overall progress bar is shown. Interrupted downloads resume as usual: run
+the same command again.
 
 **Download sources:**
 
@@ -350,6 +357,9 @@ download("mimic-iv-demo", version="2.2", output_dir="/data")
 
 # Download from S3 using boto3
 download("mimic-iv-demo", source="aws")
+
+# Download 4 files at once
+download("mitdb", output_dir="/data", jobs=4)
 
 # Handle a partial failure while keeping successfully downloaded files
 from physionet.download import DownloadError
