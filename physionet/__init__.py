@@ -2,6 +2,7 @@ from physionet.api import PhysioNetClient
 from physionet.validate import validate_dataset, ValidationConfig, ValidationResult
 from physionet.download import download
 from physionet.data import fetch, load
+from physionet.preview import head, tables
 from physionet.auth import login, logout
 
 try:
@@ -18,6 +19,8 @@ __all__ = [
     "download",
     "fetch",
     "load",
+    "head",
+    "tables",
     "login",
     "logout",
 ]
