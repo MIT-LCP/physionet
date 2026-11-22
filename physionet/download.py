@@ -709,6 +709,7 @@ def _configure_retry_adapter(
                 total=retries,
                 backoff_factor=1,
                 status_forcelist=[502, 503, 504],
+                raise_on_status=False,
             )
         )
         cache[prefix] = adapter
@@ -720,6 +721,7 @@ def _configure_retry_adapter(
             total=retries,
             backoff_factor=1,
             status_forcelist=[502, 503, 504],
+            raise_on_status=False,
         )
 
     return adapter

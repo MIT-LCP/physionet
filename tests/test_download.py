@@ -1,6 +1,7 @@
 """Tests for physionet.download module."""
 
 import hashlib
+import threading
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -392,9 +393,42 @@ class TestDownloadFile:
         assert download_adapter is not default_adapter
         assert download_adapter.max_retries.total == 3
         assert 503 in download_adapter.max_retries.status_forcelist
+        assert download_adapter.max_retries.raise_on_status is False
         assert session.get_adapter("https://example.com/api/v1/") is shared_adapter
         assert shared_adapter.max_retries.total == 7
         assert default_adapter.max_retries.total == 0
+
+    def test_exhausted_status_retries_return_final_response(self, tmp_path):
+        """An exhausted status retry reaches raise_for_status with its response."""
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        dest = tmp_path / "output.txt"
+        state = {"requests": 0}
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                state["requests"] += 1
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/file.txt"
+            with pytest.raises(requests.HTTPError) as caught:
+                _download_file(url, dest, "fakehash", requests.Session(), retries=2)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        assert caught.value.response.status_code == 503
+        assert state["requests"] == 3
 
     def test_retry_adapter_reused_across_files(self, tmp_path):
         """The dedicated adapter, and therefore its connection pool, is reused."""
