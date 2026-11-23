@@ -904,7 +904,7 @@ class TestDownloadInterrupt:
 
         call_count = 0
 
-        def mock_download_file(url, dest, expected_hash, session, retries=3, adapter_prefix=None):
+        def mock_download_file(url, dest, expected_hash, session, retries=3, adapter_prefix=None, show_progress=True):
             nonlocal call_count
             call_count += 1
             if call_count == 1:

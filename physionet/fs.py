@@ -60,6 +60,8 @@ class PhysioNetFileSystem(AbstractFileSystem):
         base_url: PhysioNet base URL
         retries: Number of retries for transient download errors
         verify: Re-check the checksum of files that are already cached
+        show_progress: Show a progress bar while a file is downloaded
+            (default True)
     """
 
     protocol = "physionet"
@@ -75,6 +77,7 @@ class PhysioNetFileSystem(AbstractFileSystem):
         base_url: str = DEFAULT_BASE_URL,
         retries: int = 3,
         verify: bool = False,
+        show_progress: bool = True,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -83,6 +86,7 @@ class PhysioNetFileSystem(AbstractFileSystem):
         self.base_url = base_url.rstrip("/")
         self.retries = retries
         self.verify = verify
+        self.show_progress = show_progress
         self._remote = _Remote(self.base_url, username, password, token)
         self._lock = threading.Lock()
         self._latest: Dict[str, str] = {}
@@ -222,7 +226,16 @@ class PhysioNetFileSystem(AbstractFileSystem):
         self._client()
         with _mapped_errors(f"{slug}/{version}/{rest}"):
             return _fetch(
-                self._remote, slug, rest, [rest], resolved, self.cache_dir, self.source, self.retries, self.verify
+                self._remote,
+                slug,
+                rest,
+                [rest],
+                resolved,
+                self.cache_dir,
+                self.source,
+                self.retries,
+                self.verify,
+                show_progress=self.show_progress,
             )
 
     def ukey(self, path):

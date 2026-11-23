@@ -90,6 +90,18 @@ def _abort_response(response: requests.Response) -> None:
             pass
 
 
+def _progress_bar(*args, show_progress: bool = True, **kwargs) -> tqdm:
+    """
+    Create a tqdm progress bar, hidden if show_progress is False.
+
+    When the bar is shown, `disable` is left unset, so that tqdm's own
+    TQDM_DISABLE environment variable can still hide it.
+    """
+    if not show_progress:
+        kwargs["disable"] = True
+    return tqdm(*args, **kwargs)
+
+
 class DownloadError(Exception):
     """One or more files failed while downloading a project."""
 
@@ -116,6 +128,7 @@ def download(
     token: Optional[str] = None,
     retries: int = 3,
     jobs: int = 1,
+    show_progress: bool = True,
 ) -> Path:
     """
     Download a PhysioNet project.
@@ -138,6 +151,8 @@ def download(
         retries: Number of retries for transient download errors (0 to disable)
         jobs: Number of files to download at once, from 1 to MAX_JOBS (8). With
             more than one, only the overall progress bar is shown.
+        show_progress: Show progress bars (default True). The messages about
+            the download (such as the summary at the end) are still printed.
 
     Returns:
         Path to the output directory
@@ -264,12 +279,12 @@ def download(
 
         try:
             if jobs == 1:
-                progress = tqdm(files, desc="Overall", unit="file")
+                progress = _progress_bar(files, desc="Overall", unit="file", show_progress=show_progress)
                 try:
                     for filepath, expected_hash in progress:
                         progress.set_postfix_str(filepath, refresh=True)
                         try:
-                            size = fetch(filepath, expected_hash)
+                            size = fetch(filepath, expected_hash, show_progress=show_progress)
                         except KeyboardInterrupt:
                             raise
                         except Exception as e:
@@ -279,7 +294,7 @@ def download(
                 finally:
                     progress.close()
             else:
-                _download_in_parallel(files, fetch, record, report_failure, jobs, source_type)
+                _download_in_parallel(files, fetch, record, report_failure, jobs, source_type, show_progress)
         except KeyboardInterrupt:
             print(
                 f"\nDownload interrupted. {downloaded} downloaded, {skipped} skipped before interruption.",
@@ -331,7 +346,9 @@ def _unsafe_paths(files: List[Tuple[str, str]], dest: Path) -> List[str]:
     return unsafe
 
 
-def _download_in_parallel(files, fetch, record, report_failure, jobs: int, source_type: str) -> None:
+def _download_in_parallel(
+    files, fetch, record, report_failure, jobs: int, source_type: str, show_progress: bool = True
+) -> None:
     """Run fetch for each file on up to `jobs` threads, recording results as they finish.
 
     The requests session (and its saved sign-in refresh) is shared by the
@@ -350,7 +367,7 @@ def _download_in_parallel(files, fetch, record, report_failure, jobs: int, sourc
         options["s3_client"] = boto3.client("s3")
 
     executor = ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="physionet-download")
-    progress = tqdm(total=len(files), desc="Overall", unit="file")
+    progress = _progress_bar(total=len(files), desc="Overall", unit="file", show_progress=show_progress)
     futures = {}
     try:
         futures = {
@@ -531,13 +548,13 @@ def _download_file_s3(
 
     downloaded = 0
     with open(dest, "wb") as f:
-        with tqdm(
+        with _progress_bar(
             total=total_size,
             unit="B",
             unit_scale=True,
             desc=dest.name,
             leave=False,
-            disable=not show_progress,
+            show_progress=show_progress,
         ) as pbar:
 
             def progress_callback(bytes_amount):
@@ -639,14 +656,14 @@ def _download_file(
         downloaded = 0
 
         with open(dest, mode) as f:
-            with tqdm(
+            with _progress_bar(
                 total=total,
                 initial=0,
                 unit="B",
                 unit_scale=True,
                 desc=dest.name,
                 leave=False,
-                disable=not show_progress,
+                show_progress=show_progress,
             ) as pbar:
                 for chunk in response.iter_content(chunk_size=8192):
                     if cancel is not None and cancel.is_set():

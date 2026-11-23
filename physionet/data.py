@@ -93,6 +93,7 @@ def fetch(
     base_url: str = DEFAULT_BASE_URL,
     retries: int = 3,
     verify: bool = False,
+    show_progress: bool = True,
 ) -> Path:
     """
     Download one file from a PhysioNet project into the cache, if needed.
@@ -113,6 +114,8 @@ def fetch(
         retries: Number of retries for transient download errors
         verify: Re-check the checksum of a file that is already cached, and
             download it again if it does not match. Slow for large files.
+        show_progress: Show a progress bar while the file is downloaded
+            (default True)
 
     Returns:
         Path to the file in the cache. Its checksum was checked when it was
@@ -125,7 +128,9 @@ def fetch(
     """
     with _Remote(base_url, username, password, token) as remote:
         path = _clean_path(path)
-        return _fetch(remote, slug, path, [path], version, cache_dir, source, retries, verify)
+        return _fetch(
+            remote, slug, path, [path], version, cache_dir, source, retries, verify, show_progress=show_progress
+        )
 
 
 def load(
@@ -141,6 +146,7 @@ def load(
     base_url: str = DEFAULT_BASE_URL,
     retries: int = 3,
     verify: bool = False,
+    show_progress: bool = True,
     **read_kwargs,
 ) -> pd.DataFrame:
     """
@@ -174,7 +180,17 @@ def load(
 
     with _Remote(base_url, username, password, token) as remote:
         file_path = _fetch(
-            remote, slug, table, candidates, version, cache_dir, source, retries, verify, tables_only=True
+            remote,
+            slug,
+            table,
+            candidates,
+            version,
+            cache_dir,
+            source,
+            retries,
+            verify,
+            tables_only=True,
+            show_progress=show_progress,
         )
     return _reader_for(file_path.name)(file_path, **read_kwargs)
 
@@ -218,6 +234,7 @@ def _fetch(
     retries: int,
     verify: bool,
     tables_only: bool = False,
+    show_progress: bool = True,
 ) -> Path:
     """Return the cached file for the one candidate path the project has."""
     _check_name(slug, "project")
@@ -254,10 +271,17 @@ def _fetch(
                 remote.client, slug, version, source, remote.username, verbose=False
             )
             if source_type == "s3":
-                _download_file_s3(source_base, f"{slug}/{version}/{name}", partial, expected_hash)
+                _download_file_s3(
+                    source_base, f"{slug}/{version}/{name}", partial, expected_hash, show_progress=show_progress
+                )
             else:
                 _download_file(
-                    f"{source_base}/{name}", partial, expected_hash, remote.client.session, retries=retries
+                    f"{source_base}/{name}",
+                    partial,
+                    expected_hash,
+                    remote.client.session,
+                    retries=retries,
+                    show_progress=show_progress,
                 )
         except (requests.ConnectionError, requests.Timeout) as exc:
             raise ConnectionError(

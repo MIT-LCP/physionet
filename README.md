@@ -430,6 +430,10 @@ server. Delete the cache folder to clear it.
 - Symbolic links inside the cache folder are refused. Only use a cache folder
   that people you don't trust cannot write to.
 
+**Progress bars** are shown while a file is downloaded. Pass
+`show_progress=False` to `load()`, `fetch()` or `download()` to hide them, or
+set `TQDM_DISABLE=1` to hide every progress bar in the program.
+
 **Errors** from `load()` and `fetch()`:
 
 | Error | When |
@@ -484,7 +488,7 @@ by `physionet login`, `PHYSIONET_TOKEN`, or a username and password), and the
 ```python
 pd.read_csv(
     "physionet://mimiciv/3.1/hosp/patients.csv.gz",
-    storage_options={"token": "pnpat_...", "cache_dir": "/data/physionet"},
+    storage_options={"token": "pnpat_...", "cache_dir": "/data/physionet", "show_progress": False},
 )
 ```
 
@@ -528,6 +532,9 @@ download("mimic-iv-demo", source="aws")
 
 # Download 4 files at once
 download("mitdb", output_dir="/data", jobs=4)
+
+# Without progress bars (the summary is still printed)
+download("mitdb", output_dir="/data", show_progress=False)
 
 # Handle a partial failure while keeping successfully downloaded files
 from physionet.download import DownloadError
