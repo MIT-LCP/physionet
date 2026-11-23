@@ -2,10 +2,12 @@
 
 import fnmatch
 import hashlib
+import os
 import re
 import socket
 import sys
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -131,6 +133,7 @@ def download(
     show_progress: bool = True,
     files: Optional[Union[List[str], Dict[str, str]]] = None,
     verbose: bool = True,
+    overwrite: bool = False,
 ) -> Path:
     """
     Download a PhysioNet project, or some of its files.
@@ -163,6 +166,11 @@ def download(
         verbose: Print messages about the download, such as where files are
             saved and the summary at the end (default True). Errors are
             printed either way, and progress bars are set by show_progress.
+        overwrite: Download files again even if they are already saved with
+            the right content (default False). Each file is downloaded next to
+            the saved one and replaces it only once its checksum matches, so a
+            failed download leaves the saved file as it was. Nothing is
+            replaced if a requested file is missing or a destination is unsafe.
 
     Returns:
         Path to the folder the files were saved in: output_dir/<slug>-<version>,
@@ -174,8 +182,9 @@ def download(
         DownloadError: If one or more file transfers fail, including access denial
         KeyboardInterrupt: If the download is interrupted
         FileNotFoundError: If the project has no file named in files
-        ValueError: If jobs is not between 1 and MAX_JOBS, or if files is a dict
-            that saves a file outside output_dir or two files in one place
+        ValueError: If jobs is not between 1 and MAX_JOBS, or if a file named in
+            files would be saved outside the destination (including through a
+            symbolic link), or two files would be saved in one place
     """
     if isinstance(jobs, bool) or not isinstance(jobs, int) or not 1 <= jobs <= MAX_JOBS:
         raise ValueError(f"jobs must be a whole number from 1 to {MAX_JOBS}, not {jobs!r}")
@@ -229,6 +238,13 @@ def download(
         # A checksum list could name paths outside the project folder (from a
         # compromised or untrusted server). Never write those.
         unsafe = _unsafe_paths(files, dest, local_path)
+        if unsafe and requested is not None:
+            # Files asked for by name are downloaded together or not at all
+            raise ValueError(
+                f"Not downloading anything, since {len(unsafe)} file(s) would be written outside "
+                f"{dest}, for example through a symbolic link: "
+                + ", ".join(f"{path!r} (as {local_path(path)!r})" for path in unsafe[:5])
+            )
         if unsafe:
             print(
                 f"Not downloading {len(unsafe)} file(s) whose paths would be written outside "
@@ -275,23 +291,36 @@ def download(
             file_dest = dest / local_path(filepath)
             file_dest.parent.mkdir(parents=True, exist_ok=True)
 
-            # Skip files that already exist and pass checksum
-            if file_dest.exists() and _verify_checksum(file_dest, expected_hash):
+            if overwrite:
+                # Download next to the saved file, and replace it only once the
+                # download is complete and its checksum matches
+                target = file_dest.with_name(f".{file_dest.name}.{uuid.uuid4().hex}.part")
+            elif file_dest.exists() and _verify_checksum(file_dest, expected_hash):
+                # Skip files that already exist and pass checksum
                 return None
+            else:
+                target = file_dest
 
-            if source_type == "s3":
-                s3_key = f"{slug}/{version}/{filepath}"
-                return _download_file_s3(source_base, s3_key, file_dest, expected_hash, **options)
-            file_url = f"{source_base}/{filepath}"
-            return _download_file(
-                file_url,
-                file_dest,
-                expected_hash,
-                client.session,
-                retries=retries,
-                adapter_prefix=download_prefix,
-                **options,
-            )
+            try:
+                if source_type == "s3":
+                    s3_key = f"{slug}/{version}/{filepath}"
+                    size = _download_file_s3(source_base, s3_key, target, expected_hash, **options)
+                else:
+                    size = _download_file(
+                        f"{source_base}/{filepath}",
+                        target,
+                        expected_hash,
+                        client.session,
+                        retries=retries,
+                        adapter_prefix=download_prefix,
+                        **options,
+                    )
+                if target != file_dest:
+                    os.replace(target, file_dest)
+                return size
+            finally:
+                if target != file_dest and target.exists():
+                    target.unlink()
 
         def record(filepath: str, size: Optional[int]) -> None:
             nonlocal skipped, downloaded, total_size

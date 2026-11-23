@@ -136,6 +136,11 @@ def main():
         help="Show what would be downloaded without downloading",
     )
     download_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Download files again even if they are already saved with the right content",
+    )
+    download_parser.add_argument(
         "--username",
         help="PhysioNet username (or set PHYSIONET_USERNAME env var)",
     )
@@ -675,6 +680,7 @@ def _handle_download(args):
             password=password,
             base_url=args.base_url,
             jobs=args.jobs,
+            overwrite=args.overwrite,
         )
         return 0
     except DownloadError as e:

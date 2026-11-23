@@ -1,11 +1,18 @@
 """Tests for downloading chosen files, and where they are saved (download(files=...))."""
 
 import hashlib
+import sys
+from importlib import import_module
+from unittest.mock import patch
 
 import pytest
 import requests_mock
 
+from physionet.cli import main
 from physionet.download import DownloadError, download
+
+# physionet exports a download() function, which hides the submodule as an attribute.
+download_module = import_module("physionet.download")
 
 BASE = "https://physionet.org"
 FILES_URL = f"{BASE}/files/demo/1.0"
@@ -148,3 +155,91 @@ def test_dry_run_shows_where_files_would_be_saved(server, tmp_path, capsys):
     run(tmp_path, files={"data/sub/102.hea": "102.hea"}, dry_run=True)
     assert "data/sub/102.hea -> 102.hea" in capsys.readouterr().out
     assert downloaded(server) == []
+
+
+def leftover_parts(folder):
+    return [path.name for path in folder.rglob("*.part")]
+
+
+def test_overwrite_downloads_saved_files_again(server, tmp_path, capsys):
+    (tmp_path / "100.hea").write_bytes(CONTENT["100.hea"])
+    (tmp_path / "100.dat").write_bytes(b"wrong!!!!!")  # same size, wrong content
+
+    run(tmp_path, files={"100.hea": "100.hea", "100.dat": "100.dat"}, overwrite=True)
+
+    # Without overwrite, the correct 100.hea would have been skipped
+    assert downloaded(server) == ["100.dat", "100.hea"]
+    assert (tmp_path / "100.hea").read_bytes() == CONTENT["100.hea"]
+    assert (tmp_path / "100.dat").read_bytes() == CONTENT["100.dat"]
+    assert "2 downloaded, 0 skipped" in capsys.readouterr().out
+    assert leftover_parts(tmp_path) == []
+
+
+@pytest.mark.parametrize("failure", ["server error", "wrong checksum"])
+def test_overwrite_keeps_the_saved_file_if_the_download_fails(server, tmp_path, failure):
+    (tmp_path / "100.dat").write_bytes(b"saved before")
+    if failure == "server error":
+        server.get(f"{FILES_URL}/100.dat", status_code=500)
+    else:
+        server.get(f"{FILES_URL}/100.dat", content=b"not what the checksum says")
+
+    with pytest.raises(DownloadError):
+        run(tmp_path, files={"100.dat": "100.dat"}, overwrite=True, retries=0)
+
+    assert (tmp_path / "100.dat").read_bytes() == b"saved before"
+    assert leftover_parts(tmp_path) == []
+
+
+def test_overwrite_replaces_nothing_if_a_file_is_missing(server, tmp_path):
+    (tmp_path / "100.hea").write_bytes(b"saved before")
+    with pytest.raises(FileNotFoundError):
+        run(tmp_path, files={"100.hea": "100.hea", "999.hea": "999.hea"}, overwrite=True)
+    assert (tmp_path / "100.hea").read_bytes() == b"saved before"
+    assert downloaded(server) == []
+
+
+def test_overwrite_replaces_nothing_outside_output_dir(server, tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (tmp_path / "victim.dat").write_bytes(b"keep me")
+    with pytest.raises(ValueError):
+        download(
+            "demo", "1.0", output_dir=str(out), source="physionet", files={"100.dat": "../victim.dat"}, overwrite=True
+        )
+    assert (tmp_path / "victim.dat").read_bytes() == b"keep me"
+    assert server.request_history == []
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_named_files_are_refused_together_if_one_is_unsafe(server, tmp_path, overwrite):
+    """A destination outside output_dir through a symbolic link stops the whole request."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "100.hea").write_bytes(b"saved before")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (out / "link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are not available")
+
+    with pytest.raises(ValueError, match="through a symbolic link"):
+        download(
+            "demo",
+            "1.0",
+            output_dir=str(out),
+            source="physionet",
+            files={"100.hea": "100.hea", "100.dat": "link/victim.dat"},
+            overwrite=overwrite,
+        )
+    assert downloaded(server) == []
+    assert (out / "100.hea").read_bytes() == b"saved before"
+    assert list(outside.iterdir()) == []
+
+
+def test_cli_passes_overwrite():
+    for argv, expected in [([], False), (["--overwrite"], True)]:
+        with patch.object(download_module, "download") as mock_download:
+            with patch.object(sys, "argv", ["physionet", "download", "demo", *argv]):
+                assert main() == 0
+        assert mock_download.call_args.kwargs["overwrite"] is expected
