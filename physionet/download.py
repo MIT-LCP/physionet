@@ -162,7 +162,7 @@ def download(
             under output_dir/<slug>-<version> (e.g. {"data/100.hea": "100.hea"}).
         verbose: Print messages about the download, such as where files are
             saved and the summary at the end (default True). Errors are
-            printed either way.
+            printed either way, and progress bars are set by show_progress.
 
     Returns:
         Path to the folder the files were saved in: output_dir/<slug>-<version>,
@@ -379,18 +379,34 @@ def _unsafe_paths(
 
 
 def _check_saved_as(saved_as: Dict[str, str]) -> Dict[str, str]:
-    """Check the paths that download(files={...}) saves files as."""
-    unsafe = [local for local in saved_as.values() if not _is_safe_path(local)]
+    """
+    Check the paths that download(files={...}) saves files as.
+
+    Each must be a plain relative path, written as PurePosixPath would write
+    it, so that two different strings never name the same file: "a//b",
+    "./b" and "b/" are refused. Two paths that differ only in case are also
+    refused, since they are the same file on macOS and Windows.
+    """
+    unsafe = [
+        local for local in saved_as.values() if not _is_safe_path(local) or str(PurePosixPath(local)) != local
+    ]
     if unsafe:
         raise ValueError(
-            "Files can only be saved inside output_dir, as relative paths without '..': "
-            + ", ".join(repr(local) for local in unsafe[:5])
+            "Files can only be saved inside output_dir, as relative paths without '..', '.', "
+            "'//' or a trailing '/': " + ", ".join(repr(local) for local in unsafe[:5])
         )
-    seen: Dict[str, str] = {}
+    seen: Dict[str, Tuple[str, str]] = {}
     for filepath, local in saved_as.items():
-        if local in seen:
-            raise ValueError(f"{seen[local]!r} and {filepath!r} would both be saved as {local!r}")
-        seen[local] = filepath
+        key = local.casefold()
+        if key in seen:
+            other, other_local = seen[key]
+            raise ValueError(
+                f"{other!r} and {filepath!r} would both be saved as {local!r}"
+                if other_local == local
+                else f"{other!r} and {filepath!r} would be saved as {other_local!r} and {local!r}, "
+                "which are the same file where file names ignore case (macOS and Windows)"
+            )
+        seen[key] = (filepath, local)
     return saved_as
 
 

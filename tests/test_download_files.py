@@ -95,6 +95,20 @@ def test_files_are_only_saved_inside_output_dir(server, tmp_path, saved_as):
     assert server.request_history == []
 
 
+@pytest.mark.parametrize("saved_as", ["ecg//100.hea", "./100.hea", "ecg/./100.hea", "ecg/100.hea/", "."])
+def test_destinations_must_be_written_plainly(server, tmp_path, saved_as):
+    """Different spellings of one path could otherwise overwrite each other."""
+    with pytest.raises(ValueError, match="only be saved inside output_dir"):
+        run(tmp_path, files={"100.hea": saved_as})
+    assert server.request_history == []
+
+
+def test_destinations_that_differ_only_in_case(server, tmp_path):
+    with pytest.raises(ValueError, match="same file where file names ignore case"):
+        run(tmp_path, files={"100.dat": "ecg/same.dat", "101.dat": "ECG/Same.dat"})
+    assert server.request_history == []
+
+
 def test_two_files_cannot_be_saved_in_one_place(server, tmp_path):
     with pytest.raises(ValueError, match="would both be saved as '100.hea'"):
         run(tmp_path, files={"100.hea": "100.hea", "data/sub/102.hea": "100.hea"})
