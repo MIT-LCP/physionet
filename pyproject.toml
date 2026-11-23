@@ -23,7 +23,7 @@ dependencies = [
     "pandas",
     "openpyxl",
     "requests",
-    "tqdm",
+    "tqdm>=4.66.0",
     "boto3>=1.26.0",
     "fsspec>=2023.1.0",
 ]
