@@ -210,6 +210,33 @@ def test_overwrite_replaces_nothing_outside_output_dir(server, tmp_path):
     assert server.request_history == []
 
 
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_named_files_are_refused_together_if_one_is_unsafe(server, tmp_path, overwrite):
+    """A destination outside output_dir through a symbolic link stops the whole request."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "100.hea").write_bytes(b"saved before")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (out / "link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are not available")
+
+    with pytest.raises(ValueError, match="through a symbolic link"):
+        download(
+            "demo",
+            "1.0",
+            output_dir=str(out),
+            source="physionet",
+            files={"100.hea": "100.hea", "100.dat": "link/victim.dat"},
+            overwrite=overwrite,
+        )
+    assert downloaded(server) == []
+    assert (out / "100.hea").read_bytes() == b"saved before"
+    assert list(outside.iterdir()) == []
+
+
 def test_cli_passes_overwrite():
     for argv, expected in [([], False), (["--overwrite"], True)]:
         with patch.object(download_module, "download") as mock_download:
