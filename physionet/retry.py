@@ -13,19 +13,24 @@ def retry_policy(retries: int, status_only: bool = False) -> Retry:
 
     502, 503 and 504 responses are retried up to `retries` times, with
     backoff. By default, connection errors and timeouts are retried too, as
-    for file downloads. With status_only, they are raised straight away, so
-    that being offline or a hung server is reported at once, as the usual
-    requests exception. connect=0 (rather than False) keeps that exception a
-    requests ConnectionError rather than a raw urllib3 one.
+    for file downloads. With status_only, nothing else is retried: connection
+    errors, timeouts and other errors (such as an SSL error) are raised
+    straight away, so that being offline or a hung server is reported at once,
+    as the usual requests exception, and other responses (such as 429 or 413
+    with a Retry-After header) are returned as they are. connect=0 (rather
+    than False) keeps that exception a requests ConnectionError rather than a
+    raw urllib3 one.
     """
     if status_only:
         return Retry(
             total=retries,
             connect=0,
             read=False,
+            other=0,
             backoff_factor=1,
             status_forcelist=[502, 503, 504],
             raise_on_status=False,
+            respect_retry_after_header=False,
         )
     return Retry(
         total=retries,
