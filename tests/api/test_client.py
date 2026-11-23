@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import pytest
 import requests_mock
 from requests.auth import AuthBase
@@ -202,6 +204,18 @@ def test_error_handling_500():
             client._make_request("GET", "test/")
 
         assert "HTTP 500" in str(exc_info.value)
+
+
+def test_make_request_closes_error_response():
+    client = PhysioNetClient()
+    response = MagicMock(status_code=503)
+    response.json.return_value = {"detail": "Service unavailable"}
+    client.session.request = MagicMock(return_value=response)
+
+    with pytest.raises(PhysioNetAPIError, match="Service unavailable"):
+        client._make_request("GET", "test/")
+
+    response.close.assert_called_once()
 
 
 def test_error_handling_non_json_response():

@@ -1,6 +1,12 @@
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import MagicMock
+
 import pytest
 import requests_mock
 from physionet.api.client import PhysioNetClient
+from physionet.api.exceptions import PhysioNetAPIError
 from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail
 
 
@@ -8,6 +14,48 @@ from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail
 def client():
     """Fixture providing a PhysioNetClient instance."""
     return PhysioNetClient()
+
+
+@pytest.fixture
+def version_server():
+    state = {"statuses": [], "requests": 0}
+    versions = [{
+        "slug": "demo",
+        "title": "Demo",
+        "version": "1.0",
+        "abstract": "",
+        "citation": "",
+    }]
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            if self.path != "/api/v1/projects/demo/versions/":
+                body = b"not found"
+                status = 404
+            else:
+                state["requests"] += 1
+                status = state["statuses"].pop(0) if state["statuses"] else 200
+                body = json.dumps(versions).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_list_published_basic(client):
@@ -160,6 +208,60 @@ def test_list_versions(client):
         assert isinstance(versions[0], ProjectVersion)
         assert versions[0].version == "1.0"
         assert versions[1].version == "2.0"
+
+
+def test_list_versions_retries_transient_status(version_server):
+    base_url, state = version_server
+    state["statuses"] = [503]
+    client = PhysioNetClient(base_url=base_url)
+    versions_url = f"{base_url}/api/v1/projects/demo/versions/"
+    default_adapter = client.session.get_adapter("http://")
+
+    try:
+        versions = client.projects.list_versions("demo", retries=1)
+    finally:
+        client.close()
+
+    assert versions[0].version == "1.0"
+    assert state["requests"] == 2
+    version_adapter = client.session.get_adapter(versions_url)
+    assert version_adapter is not default_adapter
+    assert version_adapter.max_retries.total == 1
+    assert version_adapter.max_retries.raise_on_status is False
+
+
+def test_list_versions_retries_zero_makes_one_request(version_server):
+    base_url, state = version_server
+    state["statuses"] = [503, 200]
+    client = PhysioNetClient(base_url=base_url)
+    versions_url = f"{base_url}/api/v1/projects/demo/versions/"
+    default_adapter = client.session.get_adapter("http://")
+
+    try:
+        with pytest.raises(PhysioNetAPIError, match="HTTP 503"):
+            client.projects.list_versions("demo", retries=0)
+    finally:
+        client.close()
+
+    assert state["requests"] == 1
+    assert client.session.get_adapter(versions_url) is default_adapter
+    assert not hasattr(client.session, "_physionet_version_adapters")
+
+
+def test_list_versions_closes_response(client):
+    response = MagicMock()
+    response.json.return_value = [{
+        "slug": "demo",
+        "title": "Demo",
+        "version": "1.0",
+        "abstract": "",
+        "citation": "",
+    }]
+    client._make_request = MagicMock(return_value=response)
+
+    client.projects.list_versions("demo")
+
+    response.close.assert_called_once()
 
 
 def test_get_details(client):

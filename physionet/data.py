@@ -280,7 +280,7 @@ def _fetch(
     """Return the cached file for the one candidate path the project has."""
     _check_name(slug, "project")
     if version is None:
-        version = _latest_version(remote, slug)
+        version = _latest_version(remote, slug, retries=retries)
     _check_name(version, "version")
 
     cache = get_cache_dir(cache_dir)
@@ -343,9 +343,9 @@ def _fetch(
     return target
 
 
-def _latest_version(remote: _Remote, slug: str) -> str:
+def _latest_version(remote: _Remote, slug: str, retries: int = 3) -> str:
     try:
-        return _resolve_version(remote.client, slug, None)
+        return _resolve_version(remote.client, slug, None, retries=retries)
     except (requests.ConnectionError, requests.Timeout) as exc:
         raise ConnectionError(
             f"Could not reach PhysioNet to find the latest version of {slug}. "

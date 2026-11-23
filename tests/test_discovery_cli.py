@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import requests_mock
 
+from physionet.api.endpoints import ProjectsAPI
+from physionet.api.models import ProjectVersion
 from physionet.cli import main
 
 
@@ -121,6 +123,17 @@ def test_versions_readable_and_json(capsys):
     assert "2.2  Demo ECG Database" in readable.out
     assert [item["version"] for item in json.loads(machine.out)] == ["1.0", "2.2"]
     assert machine.err == ""
+
+
+def test_versions_uses_projects_api_default_retry_policy(capsys):
+    version = ProjectVersion(slug="demo", title="Demo ECG Database", version="1.0", abstract="", citation="")
+    with patch.object(ProjectsAPI, "list_versions", return_value=[version]) as list_versions:
+        assert run_cli("versions", "demo") == 0
+
+    list_versions.assert_called_once()
+    assert list_versions.call_args.args[-1] == "demo"
+    assert list_versions.call_args.kwargs == {}
+    assert "1.0  Demo ECG Database" in capsys.readouterr().out
 
 
 def test_discovery_error_is_reported_on_stderr(capsys):

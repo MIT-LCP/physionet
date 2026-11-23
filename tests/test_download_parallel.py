@@ -70,7 +70,12 @@ def local_server():
     import json
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    state = {"files": {}, "on_file": lambda path: None}
+    state = {
+        "files": {},
+        "on_file": lambda path: None,
+        "version_statuses": [],
+        "version_requests": 0,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -89,7 +94,10 @@ def local_server():
             files = state["files"]
             prefix = "/files/demo/1.0/"
             if self.path == "/api/v1/projects/demo/versions/":
-                self.send_body(json.dumps(VERSIONS).encode(), "application/json")
+                state["version_requests"] += 1
+                statuses = state["version_statuses"]
+                status = statuses.pop(0) if statuses else 200
+                self.send_body(json.dumps(VERSIONS).encode(), "application/json", status=status)
             elif self.path == prefix + "SHA256SUMS.txt":
                 self.send_body(manifest_for(files).encode(), "text/plain")
             elif self.path.startswith(prefix) and self.path[len(prefix):] in files:
@@ -139,6 +147,19 @@ def test_parallel_download_really_runs_files_at_once(tmp_path, local_server):
     for path, body in state["files"].items():
         assert (dest / path).read_bytes() == body
     assert download_threads() == []
+
+
+def test_download_retries_version_list(tmp_path, local_server):
+    base_url, state = local_server
+    state["files"] = {"data.csv": b"version retry"}
+    state["version_statuses"] = [503]
+
+    destination = download(
+        "demo", version="1.0", output_dir=str(tmp_path), base_url=base_url, retries=1
+    )
+
+    assert (destination / "data.csv").read_bytes() == b"version retry"
+    assert state["version_requests"] == 2
 
 
 def test_parallel_failures_keep_other_files_and_are_in_manifest_order(tmp_path, capsys):

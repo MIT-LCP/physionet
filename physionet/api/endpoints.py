@@ -3,6 +3,10 @@ from urllib.parse import quote
 
 from physionet.api.exceptions import PhysioNetAPIError
 from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail, ProjectAccessStatus
+from physionet.retry import configure_retry_adapter
+
+
+_VERSION_ADAPTER_CACHE_ATTR = "_physionet_version_adapters"
 
 
 class ProjectsAPI:
@@ -79,17 +83,26 @@ class ProjectsAPI:
 
         return [PublishedProject.from_dict(p) for p in data]
 
-    def list_versions(self, project_slug: str) -> List[ProjectVersion]:
+    def list_versions(self, project_slug: str, retries: int = 3) -> List[ProjectVersion]:
         """
         List all versions of a project.
 
         Args:
             project_slug: Project identifier
+            retries: Number of retries for transient server errors (0 to disable)
 
         Returns:
             List of ProjectVersion objects
         """
         endpoint = f"projects/{project_slug}/versions/"
+        url = f"{self.client.api_base}projects/{project_slug}/versions/"
+        configure_retry_adapter(
+            self.client.session,
+            url,
+            retries,
+            adapter_prefix=url,
+            cache_attr=_VERSION_ADAPTER_CACHE_ATTR,
+        )
         response = self.client._make_request("GET", endpoint)
         try:
             return [
@@ -107,6 +120,8 @@ class ProjectsAPI:
                 "Unexpected response from the PhysioNet server for the project versions "
                 f"(HTTP {response.status_code}, {response.headers.get('Content-Type') or 'no content type'})."
             ) from exc
+        finally:
+            response.close()
 
     def get_details(self, project_slug: str, version: str) -> ProjectDetail:
         """

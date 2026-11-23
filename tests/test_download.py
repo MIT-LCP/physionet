@@ -191,6 +191,13 @@ class TestVerifyChecksum:
 
 
 class TestResolveVersion:
+    def test_retries_are_passed_to_version_lookup(self):
+        client = MagicMock()
+        client.projects.list_versions.return_value = [MagicMock(version="1.0")]
+
+        assert _resolve_version(client, "demo", None, retries=0) == "1.0"
+        client.projects.list_versions.assert_called_once_with("demo", retries=0)
+
     def test_latest_version(self):
         client = MagicMock()
         v1 = MagicMock(version="1.0")

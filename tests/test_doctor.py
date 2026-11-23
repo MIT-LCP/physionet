@@ -12,6 +12,8 @@ import requests_mock
 
 import physionet
 from physionet import auth
+from physionet.api.endpoints import ProjectsAPI
+from physionet.api.models import ProjectVersion
 from physionet.cli import main
 from physionet.doctor import FAIL, INFO, OK, PYPI_URL, WARN, fix_permissions, run_checks, summary
 from physionet.download import S3_BASE_URL
@@ -251,6 +253,20 @@ def test_dataset_open_to_everyone_on_the_mirror(server, tmp_path):
     assert by_message(checks, "Latest version 3.1").status == OK
     assert by_message(checks, "anyone, without signing in").status == OK
     assert by_message(checks, "On the AWS open data mirror").status == OK
+
+
+def test_doctor_uses_projects_api_default_retry_policy(server, tmp_path):
+    dataset(server, ACCESS)
+    with patch.object(ProjectsAPI, "list_versions", return_value=[
+        ProjectVersion(slug="mimiciv", title="MIMIC-IV", version="3.0", abstract="", citation=""),
+        ProjectVersion(slug="mimiciv", title="MIMIC-IV", version="3.1", abstract="", citation=""),
+    ]) as list_versions:
+        checks = section(run(tmp_path, slug="mimiciv"))
+
+    list_versions.assert_called_once()
+    assert list_versions.call_args.args[-1] == "mimiciv"
+    assert list_versions.call_args.kwargs == {}
+    assert by_message(checks, "Latest version 3.1").status == OK
 
 
 def test_dataset_signed_out_or_with_a_token(server, tmp_path, monkeypatch):

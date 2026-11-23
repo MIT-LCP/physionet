@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import os
 import stat
+from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
@@ -11,7 +12,7 @@ import requests_mock as rm
 
 import physionet
 from physionet.api.exceptions import ForbiddenError, NotFoundError
-from physionet.data import _origin_folder, fetch, get_cache_dir, latest_version, load
+from physionet.data import _latest_version, _origin_folder, fetch, get_cache_dir, latest_version, load
 
 BASE = "https://physionet.org"
 FILES = f"{BASE}/files/demo/1.0"
@@ -89,6 +90,15 @@ def test_latest_version_is_looked_up_when_not_given(cache):
         path = fetch("demo", "docs/notes.txt", source="physionet")
 
     assert path == cache / "physionet.org" / "demo" / "1.0" / "docs" / "notes.txt"
+
+
+def test_latest_version_passes_retries_to_version_lookup():
+    remote = MagicMock()
+
+    with patch("physionet.data._resolve_version", return_value="1.0") as resolve_version:
+        assert _latest_version(remote, "demo", retries=0) == "1.0"
+
+    resolve_version.assert_called_once_with(remote.client, "demo", None, retries=0)
 
 
 def test_offline_without_a_version_explains_how_to_use_the_cache(cache):
