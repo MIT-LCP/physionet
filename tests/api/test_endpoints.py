@@ -1,9 +1,12 @@
 import json
+import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 import requests_mock
 from physionet.api.client import PhysioNetClient
 from physionet.api.exceptions import PhysioNetAPIError
@@ -305,3 +308,86 @@ def test_download_checksums(client, tmp_path):
 
         assert output_file.exists()
         assert output_file.read_bytes() == checksum_content
+
+
+@pytest.fixture
+def projects_server():
+    """A local PhysioNet API that lists versions for any project, recording connections."""
+    state = {"requests": 0, "connections": set(), "delay": 0}
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            state["requests"] += 1
+            state["connections"].add(self.client_address)
+            if state["delay"]:
+                time.sleep(state["delay"])
+            slug = self.path.split("/")[4]
+            version = {"slug": slug, "title": slug, "version": "1.0", "abstract": "", "citation": ""}
+            body = json.dumps([version]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_list_versions_reuses_one_connection_for_all_projects(projects_server):
+    base_url, state = projects_server
+    client = PhysioNetClient(base_url=base_url)
+    adapters_before = len(client.session.adapters)
+    try:
+        for i in range(50):
+            assert client.projects.list_versions(f"project{i}")[0].slug == f"project{i}"
+    finally:
+        client.close()
+
+    assert state["requests"] == 50
+    assert len(state["connections"]) == 1
+    # One adapter for every project, rather than one per project
+    assert len(client.session.adapters) == adapters_before + 1
+
+
+def test_list_versions_timeout_makes_one_request(projects_server):
+    base_url, state = projects_server
+    state["delay"] = 1.0
+    client = PhysioNetClient(base_url=base_url, timeout=0.2)
+    start = time.monotonic()
+    try:
+        with pytest.raises(requests.exceptions.ReadTimeout):
+            client.projects.list_versions("demo", retries=3)
+    finally:
+        client.close()
+
+    assert state["requests"] == 1
+    assert time.monotonic() - start < 1.0
+
+
+def test_list_versions_connection_refused_is_immediate():
+    # A port that nothing listens on
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    client = PhysioNetClient(base_url=f"http://127.0.0.1:{port}")
+    start = time.monotonic()
+    try:
+        with pytest.raises(requests.exceptions.ConnectionError):
+            client.projects.list_versions("demo", retries=3)
+    finally:
+        client.close()
+
+    assert time.monotonic() - start < 1.0
