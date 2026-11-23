@@ -19,17 +19,29 @@ username and password), and can also be passed as storage options:
     pd.read_csv("physionet://mimiciv/3.1/hosp/patients.csv.gz",
                 storage_options={"token": "pnpat_..."})
 
+To read only part of a large file, such as a few seconds of a long recording,
+pass stream=True. The parts that are needed are then read with HTTP range
+requests, instead of downloading the whole file. They are not checked against
+the checksum list or kept in the cache, but a file already in the cache is read
+from there:
+
+    with fsspec.open("physionet://mitdb/1.0.0/100.dat", stream=True) as f:
+        f.seek(1_000_000)
+        data = f.read(10_800)
+
 Listing a version uses only its checksum list, so browsing a dataset does not
 download it. Sizes are known for cached files; for other files info() asks the
 server, and ls() reports None. The filesystem is read-only.
 """
 
+import re
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
 from fsspec import AbstractFileSystem
+from fsspec.spec import AbstractBufferedFile
 
 from physionet.api.exceptions import ForbiddenError, NotFoundError
 from physionet.data import (
@@ -41,8 +53,10 @@ from physionet.data import (
     _latest_version,
     _manifest,
     _origin_folder,
+    _refuse_symlinks,
     get_cache_dir,
 )
+from physionet.download import S3_BASE_URL, _configure_retry_adapter, _select_source
 
 __all__ = ["PhysioNetFileSystem"]
 
@@ -62,6 +76,14 @@ class PhysioNetFileSystem(AbstractFileSystem):
         verify: Re-check the checksum of files that are already cached
         show_progress: Show a progress bar while a file is downloaded
             (default True)
+        stream: Read only the parts of a file that are needed, with HTTP range
+            requests, instead of downloading the whole file into the cache
+            (default False). A file that is already in the cache is read from
+            there, after checking it again if verify=True. Parts that are read
+            are not checked against the file's checksum, and are not kept in
+            the cache. If the server sends whole files instead of parts, the
+            file is downloaded into the cache as without stream. Can also be
+            given for one file, as fs.open(path, stream=True).
     """
 
     protocol = "physionet"
@@ -78,6 +100,7 @@ class PhysioNetFileSystem(AbstractFileSystem):
         retries: int = 3,
         verify: bool = False,
         show_progress: bool = True,
+        stream: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -87,10 +110,12 @@ class PhysioNetFileSystem(AbstractFileSystem):
         self.retries = retries
         self.verify = verify
         self.show_progress = show_progress
+        self.stream = stream
         self._remote = _Remote(self.base_url, username, password, token)
         self._lock = threading.Lock()
         self._latest: Dict[str, str] = {}
         self._manifests: Dict[Tuple[str, str], Dict[str, str]] = {}
+        self._file_urls: Dict[Tuple[str, str], str] = {}
 
     @classmethod
     def _strip_protocol(cls, path):
@@ -216,10 +241,41 @@ class PhysioNetFileSystem(AbstractFileSystem):
             return _directory(f"{slug}/{version}/{rest}")
         raise FileNotFoundError(f"physionet://{slug}/{version}/{rest}")
 
-    def _open(self, path, mode="rb", **kwargs):
+    def _open(self, path, mode="rb", block_size=None, stream=None, **kwargs):
         if mode != "rb":
             raise PermissionError("physionet:// is read-only")
-        return open(self.local_path(path), "rb")
+        if not (self.stream if stream is None else stream):
+            return open(self.local_path(path), "rb")
+
+        slug, version, rest = self._split(path)
+        if not slug or not version or not rest:
+            raise IsADirectoryError(f"physionet://{self._strip_protocol(path)} is not a file")
+        rest = _clean_path(rest)
+        resolved = self._resolve(slug, version)
+        # A file that is already in the cache was checked when it was
+        # downloaded, and needs no requests
+        cache = get_cache_dir(self.cache_dir)
+        cached = self._cached_file(slug, resolved, rest)
+        if cached.is_file():
+            _refuse_symlinks(cache, cached)
+            if self.verify:
+                # Check its checksum, and download it again if it changed
+                return open(self.local_path(path), "rb")
+            return open(cached, "rb")
+        # The checksum list is not needed, and for a large dataset it is
+        # large, so a missing file is reported by the server instead
+        try:
+            return _RangeFile(
+                self,
+                path,
+                self._file_url(slug, resolved, rest),
+                self._client().session,
+                timeout=self._client().timeout,
+                block_size=block_size,
+            )
+        except _RangesNotSupported:
+            # Download the whole file once, into the cache, as without stream
+            return open(self.local_path(path), "rb")
 
     def local_path(self, path) -> Path:
         """Download a file into the cache if needed, and return its local path."""
@@ -255,6 +311,24 @@ class PhysioNetFileSystem(AbstractFileSystem):
         return int(self.ukey(path)[:16], 16)
 
     # --- Helpers ---
+
+    def _file_url(self, slug: str, version: str, rest: str) -> str:
+        """The URL to read a file from, from the same source as downloads use."""
+        key = (slug, version)
+        with self._lock:
+            base = self._file_urls.get(key)
+        if base is None:
+            client = self._client()
+            source_type, base = _select_source(
+                client, slug, version, self.source, self._remote.username, verbose=False
+            )
+            if source_type == "s3":
+                # The open data mirror can be read over HTTPS, without boto3
+                base = f"{S3_BASE_URL}/{slug}/{version}"
+            _configure_retry_adapter(client.session, f"{base}/", self.retries, adapter_prefix=base)
+            with self._lock:
+                self._file_urls[key] = base
+        return f"{base}/{rest}"
 
     def _versions(self, slug: str) -> List[str]:
         with _mapped_errors(slug):
@@ -300,3 +374,117 @@ class _mapped_errors:
         if exc_type is not None and issubclass(exc_type, ForbiddenError):
             raise PermissionError(f"physionet://{self.path}: {exc}") from exc
         return False
+
+
+class _RangeFile(AbstractBufferedFile):
+    """
+    A file read with HTTP range requests, for PhysioNetFileSystem(stream=True).
+
+    Requests start at DEFAULT_BLOCK_SIZE bytes, and double, up to
+    MAX_BLOCK_SIZE, while each read carries on from where the last request
+    ended, so that reading a whole file takes few requests while a small read
+    from the middle of a large file fetches little more than it needs. The
+    first request also gives the size of the file.
+    """
+
+    DEFAULT_BLOCK_SIZE = 32 * 1024
+    MAX_BLOCK_SIZE = 8 * 1024 * 1024
+
+    def __init__(self, fs, path, url, session, timeout, block_size=None):
+        # Set before the first request, for its error messages. Until the
+        # file is set up, it counts as closed, so nothing is done on deletion.
+        self.path = path
+        self.closed = True
+        self.url = url
+        self.session = session
+        self.timeout = timeout
+        self._initial_request_size = block_size or self.DEFAULT_BLOCK_SIZE
+        self._request_size = self._initial_request_size
+        self._buffer_start = 0
+        self._buffer, size = self._request(0, self._initial_request_size)
+        # fsspec's own read-ahead cache is not used, since the buffer here
+        # sets the size of each request
+        super().__init__(fs, path, mode="rb", block_size=self._initial_request_size, cache_type="none", size=size)
+
+    def _fetch_range(self, start, end):
+        end = min(end, self.size)
+        if start >= end:
+            return b""
+        buffer_end = self._buffer_start + len(self._buffer)
+        if self._buffer_start <= start and end <= buffer_end:
+            return self._buffer[start - self._buffer_start : end - self._buffer_start]
+
+        # Use the part of the range that is already in the buffer
+        head = b""
+        if self._buffer_start <= start < buffer_end:
+            head = self._buffer[start - self._buffer_start :]
+            start = buffer_end
+        if start == buffer_end:
+            self._request_size = min(2 * self._request_size, self.MAX_BLOCK_SIZE)
+        else:
+            self._request_size = self._initial_request_size
+
+        self._buffer, _ = self._request(start, max(end, start + self._request_size))
+        self._buffer_start = start
+        return head + self._buffer[: end - start]
+
+    def _request(self, start, end):
+        """
+        Request bytes start to end - 1, returning them and the size of the file.
+
+        The body is only read for a partial response, and only up to the length
+        that its Content-Range gives. A server that sends the whole file
+        instead raises _RangesNotSupported for the first request, and OSError
+        after that, without reading the file.
+        """
+        response = self.session.get(
+            self.url,
+            # Compression would change the byte offsets
+            headers={"Range": f"bytes={start}-{end - 1}", "Accept-Encoding": "identity"},
+            timeout=self.timeout,
+            stream=True,
+        )
+        try:
+            # Later requests go straight to where the file was redirected
+            if response.history and response.url.startswith("https://"):
+                self.url = response.url
+            content_range = response.headers.get("Content-Range", "")
+            if response.status_code == 206:
+                match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range.strip())
+                if not match or int(match.group(1)) != start or int(match.group(2)) >= end:
+                    raise OSError(f"Unexpected Content-Range {content_range!r} for {self.path}")
+                return self._read_body(response, int(match.group(2)) - start + 1), int(match.group(3))
+            if response.status_code == 416:
+                # The range starts at or after the end of the file
+                match = re.fullmatch(r"bytes \*/(\d+)", content_range.strip())
+                if not match:
+                    raise OSError(f"Unexpected Content-Range {content_range!r} for {self.path}")
+                return b"", int(match.group(1))
+            if response.status_code == 200:
+                # The server ignores the range and would send the whole file
+                if getattr(self, "size", None) is None:
+                    raise _RangesNotSupported(self.path)
+                raise OSError(f"The server stopped sending parts of physionet://{self.path}")
+            if response.status_code == 404:
+                raise FileNotFoundError(f"physionet://{self.path}")
+            if response.status_code in (401, 403):
+                raise PermissionError(f"physionet://{self.path}: access denied ({response.status_code})")
+            response.raise_for_status()
+            raise OSError(f"Unexpected response {response.status_code} for physionet://{self.path}")
+        finally:
+            response.close()
+
+    def _read_body(self, response, length):
+        """Read a response body of the given length, and no more."""
+        data = bytearray()
+        for chunk in response.iter_content(chunk_size=65536):
+            data += chunk
+            if len(data) > length:
+                raise OSError(f"The server sent more than was asked for, for physionet://{self.path}")
+        if len(data) != length:
+            raise OSError(f"The server sent {len(data)} of {length} bytes for physionet://{self.path}")
+        return bytes(data)
+
+
+class _RangesNotSupported(Exception):
+    """The server sends whole files, not the parts that were asked for."""
