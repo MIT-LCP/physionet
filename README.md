@@ -93,12 +93,21 @@ physionet download mimic-iv-demo --include "*.csv" --exclude "*/notes/*"
 
 # Download 4 files at once (helps most for datasets with many small files)
 physionet download mitdb --jobs 4
+
+# Download files again, even those already saved with the right content
+physionet download mitdb --overwrite
 ```
 
 `--jobs` (or `-j`) takes 1 to 8, and defaults to 1. With more than one, only
 the overall progress bar is shown. Ctrl-C stops all running files straight
 away. Run the same command again to continue: files downloaded from PhysioNet
 resume where they stopped, and partly downloaded files from AWS start again.
+
+Files that are already saved and match the dataset's checksums are skipped,
+and saved files that do not match are downloaded again. `--overwrite` also
+downloads the matching ones again. Each file is downloaded next to the saved
+one and replaces it only once its checksum matches, so a failed download
+leaves the saved file as it was.
 
 **Download sources:**
 
@@ -576,6 +585,9 @@ download(
     "mitdb", "1.0.0", output_dir="/data", files={"100.hea": "ecg/100.hea"},
     verbose=False, show_progress=False,
 )
+
+# Download files again, even those already saved with the right content
+download("mitdb", "1.0.0", output_dir="/data", overwrite=True)
 
 # Handle a partial failure while keeping successfully downloaded files
 from physionet.download import DownloadError
