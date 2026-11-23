@@ -541,7 +541,9 @@ with fsspec.open("physionet://mitdb/1.0.0/100.dat", stream=True) as f:
 Requests start small and grow while a file is read from start to end, so
 reading a whole file this way also takes few requests. Parts read this way are
 not checked against `SHA256SUMS.txt` and are not kept in the cache, but a file
-that is already in the cache is read from there.
+that is already in the cache is read from there (and checked again first with
+`verify=True`). If a server sends whole files instead of parts, the file is
+downloaded into the cache once, as without `stream`.
 
 Use `latest` as the version to get the newest one (looked up online). Pin a
 version for reproducible results. The filesystem is read-only. A missing

@@ -79,9 +79,11 @@ class PhysioNetFileSystem(AbstractFileSystem):
         stream: Read only the parts of a file that are needed, with HTTP range
             requests, instead of downloading the whole file into the cache
             (default False). A file that is already in the cache is read from
-            there. Parts that are read are not checked against the file's
-            checksum, and are not kept in the cache. Can also be given for
-            one file, as fs.open(path, stream=True).
+            there, after checking it again if verify=True. Parts that are read
+            are not checked against the file's checksum, and are not kept in
+            the cache. If the server sends whole files instead of parts, the
+            file is downloaded into the cache as without stream. Can also be
+            given for one file, as fs.open(path, stream=True).
     """
 
     protocol = "physionet"
@@ -251,17 +253,24 @@ class PhysioNetFileSystem(AbstractFileSystem):
         cached = self._cached_file(slug, resolved, rest)
         if cached.is_file():
             _refuse_symlinks(cache, cached)
+            if self.verify:
+                # Check its checksum, and download it again if it changed
+                return open(self.local_path(path), "rb")
             return open(cached, "rb")
         # The checksum list is not needed, and for a large dataset it is
         # large, so a missing file is reported by the server instead
-        return _RangeFile(
-            self,
-            path,
-            self._file_url(slug, resolved, rest),
-            self._client().session,
-            timeout=self._client().timeout,
-            block_size=block_size,
-        )
+        try:
+            return _RangeFile(
+                self,
+                path,
+                self._file_url(slug, resolved, rest),
+                self._client().session,
+                timeout=self._client().timeout,
+                block_size=block_size,
+            )
+        except _RangesNotSupported:
+            # Download the whole file once, into the cache, as without stream
+            return open(self.local_path(path), "rb")
 
     def local_path(self, path) -> Path:
         """Download a file into the cache if needed, and return its local path."""
@@ -415,12 +424,20 @@ class _RangeFile(AbstractBufferedFile):
         return head + self._buffer[: end - start]
 
     def _request(self, start, end):
-        """Request bytes start to end - 1, returning them and the size of the file."""
+        """
+        Request bytes start to end - 1, returning them and the size of the file.
+
+        The body is only read for a partial response, and only up to the length
+        that its Content-Range gives. A server that sends the whole file
+        instead raises _RangesNotSupported for the first request, and OSError
+        after that, without reading the file.
+        """
         response = self.session.get(
             self.url,
             # Compression would change the byte offsets
             headers={"Range": f"bytes={start}-{end - 1}", "Accept-Encoding": "identity"},
             timeout=self.timeout,
+            stream=True,
         )
         try:
             # Later requests go straight to where the file was redirected
@@ -429,9 +446,9 @@ class _RangeFile(AbstractBufferedFile):
             content_range = response.headers.get("Content-Range", "")
             if response.status_code == 206:
                 match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range.strip())
-                if not match or int(match.group(1)) != start:
+                if not match or int(match.group(1)) != start or int(match.group(2)) >= end:
                     raise OSError(f"Unexpected Content-Range {content_range!r} for {self.path}")
-                return response.content, int(match.group(3))
+                return self._read_body(response, int(match.group(2)) - start + 1), int(match.group(3))
             if response.status_code == 416:
                 # The range starts at or after the end of the file
                 match = re.fullmatch(r"bytes \*/(\d+)", content_range.strip())
@@ -439,9 +456,10 @@ class _RangeFile(AbstractBufferedFile):
                     raise OSError(f"Unexpected Content-Range {content_range!r} for {self.path}")
                 return b"", int(match.group(1))
             if response.status_code == 200:
-                # The server sent the whole file
-                content = response.content
-                return content[start:end], len(content)
+                # The server ignores the range and would send the whole file
+                if getattr(self, "size", None) is None:
+                    raise _RangesNotSupported(self.path)
+                raise OSError(f"The server stopped sending parts of physionet://{self.path}")
             if response.status_code == 404:
                 raise FileNotFoundError(f"physionet://{self.path}")
             if response.status_code in (401, 403):
@@ -450,3 +468,18 @@ class _RangeFile(AbstractBufferedFile):
             raise OSError(f"Unexpected response {response.status_code} for physionet://{self.path}")
         finally:
             response.close()
+
+    def _read_body(self, response, length):
+        """Read a response body of the given length, and no more."""
+        data = bytearray()
+        for chunk in response.iter_content(chunk_size=65536):
+            data += chunk
+            if len(data) > length:
+                raise OSError(f"The server sent more than was asked for, for physionet://{self.path}")
+        if len(data) != length:
+            raise OSError(f"The server sent {len(data)} of {length} bytes for physionet://{self.path}")
+        return bytes(data)
+
+
+class _RangesNotSupported(Exception):
+    """The server sends whole files, not the parts that were asked for."""

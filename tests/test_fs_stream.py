@@ -131,6 +131,23 @@ def test_files_already_in_the_cache_need_no_requests(server):
     assert server.request_history == []
 
 
+@pytest.mark.parametrize("verify", [False, True])
+def test_verify_checks_files_in_the_cache(server, cache, verify):
+    PhysioNetFileSystem(show_progress=False, source="physionet", skip_instance_cache=True).open(
+        "demo/1.0/small.hea"
+    ).close()
+    cached = cache / "physionet.org" / "demo" / "1.0" / "small.hea"
+    cached.write_bytes(b"corrupted")
+
+    with stream_fs(verify=verify).open("demo/1.0/small.hea") as f:
+        content = f.read()
+
+    # With verify=True, a cached file that no longer matches its checksum is
+    # downloaded again, as without stream; otherwise the cache is trusted
+    assert content == (CONTENT["small.hea"] if verify else b"corrupted")
+    assert cached.read_bytes() == content
+
+
 def test_small_and_empty_files(server):
     fs = stream_fs()
     with fs.open("demo/1.0/small.hea", "rb") as f:
@@ -142,11 +159,50 @@ def test_small_and_empty_files(server):
         assert f.read() == CONTENT["small.hea"].decode()
 
 
-def test_server_that_ignores_the_range(server):
+def test_server_that_ignores_the_range_downloads_the_file_once(server, cache):
     server.get(f"{FILES}/big.dat", content=serve_ranges(BIG, ignore_range=True))
     with stream_fs().open("demo/1.0/big.dat") as f:
         f.seek(300_000)
-        assert f.read(50) == BIG[300_000:300_050]
+        assert f.read(1) == BIG[300_000:300_001]
+        f.seek(900_000)
+        assert f.read(1) == BIG[900_000:900_001]
+
+    # The first response is closed without reading it, and the file is then
+    # downloaded once into the cache (checked against its checksum), from
+    # which the reads are made
+    gets = [r for r in server.request_history if r.url == f"{FILES}/big.dat"]
+    assert len(gets) == 2
+    assert "Range" in gets[0].headers and "Range" not in gets[1].headers
+    assert (cache / "physionet.org" / "demo" / "1.0" / "big.dat").read_bytes() == BIG
+
+
+def test_server_that_stops_sending_parts(server):
+    callback = serve_ranges(BIG)
+    calls = []
+
+    def first_part_only(request, context):
+        calls.append(request)
+        if len(calls) == 1:
+            return callback(request, context)
+        context.status_code = 200
+        return BIG
+
+    server.get(f"{FILES}/big.dat", content=first_part_only)
+    with stream_fs().open("demo/1.0/big.dat") as f:
+        f.seek(500_000)
+        with pytest.raises(OSError, match="stopped sending parts"):
+            f.read(10)
+
+
+def test_response_longer_than_its_content_range(server):
+    def too_long(request, context):
+        context.status_code = 206
+        context.headers["Content-Range"] = f"bytes 0-9/{len(BIG)}"
+        return BIG[:5000]
+
+    server.get(f"{FILES}/big.dat", content=too_long)
+    with pytest.raises(OSError, match="more than was asked for"):
+        stream_fs().open("demo/1.0/big.dat")
 
 
 def test_requests_ask_for_uncompressed_data(server):
