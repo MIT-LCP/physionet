@@ -179,6 +179,46 @@ def load(
     return _reader_for(file_path.name)(file_path, **read_kwargs)
 
 
+def latest_version(
+    slug: str,
+    *,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    token: Optional[str] = None,
+    base_url: str = DEFAULT_BASE_URL,
+) -> str:
+    """
+    Return the latest published version of a PhysioNet project.
+
+    This is the version that download(), fetch() and load() use when no
+    version is given. It is looked up online each time.
+
+    Args:
+        slug: Project identifier (e.g., "mimic-iv-demo")
+        username: PhysioNet username (or use PHYSIONET_USERNAME env var)
+        password: PhysioNet password (or use PHYSIONET_PASSWORD env var)
+        token: PhysioNet access token (or use PHYSIONET_TOKEN env var).
+            Without credentials, the sign-in saved by `physionet login` is used.
+        base_url: PhysioNet base URL
+
+    Returns:
+        The version, e.g. "2.2"
+
+    Raises:
+        ValueError: If slug is not a valid project name
+        NotFoundError: If the project does not exist or has no versions
+        ConnectionError: If PhysioNet cannot be reached
+    """
+    _check_name(slug, "project")
+    with _Remote(base_url, username, password, token) as remote:
+        try:
+            return _resolve_version(remote.client, slug, None)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            raise ConnectionError(
+                f"Could not reach PhysioNet to find the latest version of {slug}. ({type(exc).__name__})"
+            ) from None
+
+
 class _Remote:
     """Connect to PhysioNet only when the cache cannot answer."""
 

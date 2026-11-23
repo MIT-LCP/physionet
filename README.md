@@ -414,6 +414,14 @@ been loaded once is read from the cache without contacting PhysioNet, so it
 works offline. Without one, the latest version is looked up online each time.
 Load each file once while online before relying on it offline.
 
+`latest_version()` returns the version that is used when none is given, so you
+can look it up once and pin it:
+
+```python
+version = physionet.latest_version("mimic-iv-demo")  # e.g. "2.2"
+patients = physionet.load("mimic-iv-demo", "hosp/patients", version=version)
+```
+
 **The cache** is at `~/.cache/physionet/physionet.org/<dataset>/<version>/`.
 Set `PHYSIONET_CACHE` (or pass `cache_dir=`) to use another folder; if neither
 is set, `$XDG_CACHE_HOME/physionet` is used when `XDG_CACHE_HOME` is set.

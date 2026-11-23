@@ -1,7 +1,7 @@
 from physionet.api import PhysioNetClient
 from physionet.validate import validate_dataset, ValidationConfig, ValidationResult
 from physionet.download import download
-from physionet.data import fetch, load
+from physionet.data import fetch, latest_version, load
 from physionet.preview import head, tables
 from physionet.auth import login, logout
 
@@ -19,6 +19,7 @@ __all__ = [
     "download",
     "fetch",
     "load",
+    "latest_version",
     "head",
     "tables",
     "login",

@@ -11,7 +11,7 @@ import requests_mock as rm
 
 import physionet
 from physionet.api.exceptions import ForbiddenError, NotFoundError
-from physionet.data import _origin_folder, fetch, get_cache_dir, load
+from physionet.data import _origin_folder, fetch, get_cache_dir, latest_version, load
 
 BASE = "https://physionet.org"
 FILES = f"{BASE}/files/demo/1.0"
@@ -201,6 +201,7 @@ def test_cache_location_settings(tmp_path, monkeypatch):
 
 def test_exported_from_the_package():
     assert physionet.load is load and physionet.fetch is fetch
+    assert physionet.latest_version is latest_version
 
 
 def test_each_server_has_its_own_cache(cache):
@@ -338,3 +339,50 @@ def test_offline_download_gives_a_clear_error_and_leaves_no_partial_files(cache)
 
     hosp = cache / "physionet.org" / "demo" / "1.0" / "hosp"
     assert list(hosp.iterdir()) == []
+
+
+VERSIONS_URL = f"{BASE}/api/v1/projects/demo/versions/"
+VERSIONS = [
+    {"slug": "demo", "title": "Demo", "version": v, "abstract": "", "citation": ""} for v in ("0.9", "1.0")
+]
+
+
+def test_latest_version_is_the_one_fetch_uses(cache):
+    with rm.Mocker() as mocker:
+        mocker.get(VERSIONS_URL, json=VERSIONS)
+        mock_project(mocker)
+        assert latest_version("demo") == "1.0"
+        path = fetch("demo", "docs/notes.txt", source="physionet")
+
+    assert path.parent.parent == cache / "physionet.org" / "demo" / "1.0"
+
+
+def test_latest_version_sends_credentials(cache):
+    with rm.Mocker() as mocker:
+        mocker.get(VERSIONS_URL, json=VERSIONS)
+        latest_version("demo", username="user", password="pass")
+
+    assert mocker.request_history[-1].headers["Authorization"].startswith("Basic ")
+
+
+@pytest.mark.parametrize("response", [{"status_code": 404}, {"json": []}])
+def test_latest_version_of_a_missing_project(cache, response):
+    with rm.Mocker() as mocker:
+        mocker.get(VERSIONS_URL, **response)
+        with pytest.raises(NotFoundError):
+            latest_version("demo")
+
+
+def test_latest_version_offline(cache):
+    with rm.Mocker() as mocker:
+        mocker.get(VERSIONS_URL, exc=requests.ConnectionError)
+        with pytest.raises(ConnectionError, match="latest version of demo"):
+            latest_version("demo")
+
+
+def test_latest_version_checks_the_name(cache):
+    with rm.Mocker() as mocker:
+        with pytest.raises(ValueError, match="not a valid project name"):
+            latest_version("../demo")
+
+    assert mocker.request_history == []
