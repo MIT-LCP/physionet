@@ -146,7 +146,12 @@ class PhysioNetFileSystem(AbstractFileSystem):
             self._client()
             with _mapped_errors(f"{slug}/{version}"):
                 files, _ = _manifest(
-                    self._remote, get_cache_dir(self.cache_dir), _origin_folder(self.base_url), slug, resolved
+                    self._remote,
+                    get_cache_dir(self.cache_dir),
+                    _origin_folder(self.base_url),
+                    slug,
+                    resolved,
+                    self.retries,
                 )
             with self._lock:
                 self._manifests[key] = files

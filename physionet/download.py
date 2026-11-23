@@ -175,7 +175,7 @@ def download(
 
         # Get file manifest
         try:
-            files = _get_file_manifest(client, slug, version)
+            files = _get_file_manifest(client, slug, version, retries)
         except requests.HTTPError as exc:
             if exc.response is not None and exc.response.status_code in (401, 403):
                 raise ForbiddenError(
@@ -414,17 +414,21 @@ def _resolve_version(client: PhysioNetClient, slug: str, version: Optional[str])
     return version
 
 
-def _get_file_manifest(client: PhysioNetClient, slug: str, version: str) -> List[Tuple[str, str]]:
+def _get_file_manifest(
+    client: PhysioNetClient, slug: str, version: str, retries: int = 3
+) -> List[Tuple[str, str]]:
     """
     Get the file manifest from SHA256SUMS.txt.
 
     Fetches the checksums file via the /files/ endpoint, which works
-    without authentication for open-access projects.
+    without authentication for open-access projects. Transient errors are
+    retried as for downloads (`retries=0` to disable).
 
     Returns:
         List of (filepath, sha256_hash) tuples
     """
     url = f"{client.base_url}/files/{slug}/{version}/SHA256SUMS.txt"
+    _configure_manifest_retries(client, slug, version, retries)
     response = client.session.get(url, timeout=client.timeout)
     response.raise_for_status()
     return _parse_manifest(response.text)
@@ -742,6 +746,12 @@ def _configure_retry_adapter(
         )
 
     return adapter
+
+
+def _configure_manifest_retries(client: PhysioNetClient, slug: str, version: str, retries: int) -> None:
+    """Retry transient errors for a project version's checksum list, as for its files."""
+    prefix = f"{client.base_url}/files/{slug}/{version}"
+    _configure_retry_adapter(client.session, f"{prefix}/", retries, adapter_prefix=prefix)
 
 
 def _download_adapter_prefix(url: str) -> str:
