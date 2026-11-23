@@ -109,6 +109,19 @@ def test_destinations_that_differ_only_in_case(server, tmp_path):
     assert server.request_history == []
 
 
+def test_destinations_that_are_one_file_through_a_symbolic_link(server, tmp_path):
+    (tmp_path / "real").mkdir()
+    try:
+        (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are not available")
+
+    with pytest.raises(ValueError, match="through a symbolic link"):
+        run(tmp_path, files={"100.dat": "link/same.dat", "101.dat": "real/same.dat"})
+    assert downloaded(server) == []
+    assert not (tmp_path / "real" / "same.dat").exists()
+
+
 def test_two_files_cannot_be_saved_in_one_place(server, tmp_path):
     with pytest.raises(ValueError, match="would both be saved as '100.hea'"):
         run(tmp_path, files={"100.hea": "100.hea", "data/sub/102.hea": "100.hea"})

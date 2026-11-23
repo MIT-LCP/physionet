@@ -238,6 +238,10 @@ def download(
             unsafe_set = set(unsafe)
             files = [entry for entry in files if entry[0] not in unsafe_set]
 
+        # Different paths can still be one file, through a symbolic link
+        # inside dest. Refuse that before downloading anything.
+        _check_distinct_destinations(files, dest, local_path)
+
         if dry_run:
             print(f"Project: {slug} v{version}")
             print(f"Source: {source_label}")
@@ -376,6 +380,21 @@ def _unsafe_paths(
         ):
             unsafe.append(filepath)
     return unsafe
+
+
+def _check_distinct_destinations(
+    files: List[Tuple[str, str]], dest: Path, local_path: Callable[[str], str] = lambda path: path
+) -> None:
+    """Raise ValueError if two files would be saved as one, after following symbolic links."""
+    seen: Dict[Path, str] = {}
+    for filepath, _ in files:
+        target = (dest / local_path(filepath)).resolve()
+        if target in seen:
+            raise ValueError(
+                f"{seen[target]!r} and {filepath!r} would both be saved as {target}, "
+                "through a symbolic link in the destination"
+            )
+        seen[target] = filepath
 
 
 def _check_saved_as(saved_as: Dict[str, str]) -> Dict[str, str]:
