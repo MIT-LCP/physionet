@@ -13,12 +13,12 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import requests
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
-from urllib3.util.retry import Retry
 
 from physionet.api.client import PhysioNetClient
 from physionet.api.exceptions import ForbiddenError, NotFoundError
 from physionet.api.utils import format_size
 from physionet.auth import resolve_credentials
+from physionet.retry import configure_retry_adapter
 
 S3_BASE_URL = "https://physionet-open.s3.amazonaws.com"
 S3_BUCKET = "physionet-open"
@@ -187,7 +187,7 @@ def download(
 
     try:
         # Resolve version
-        version = _resolve_version(client, slug, version)
+        version = _resolve_version(client, slug, version, retries=retries)
 
         # Get file manifest
         requested = files
@@ -496,9 +496,11 @@ def _download_in_parallel(
         progress.close()
 
 
-def _resolve_version(client: PhysioNetClient, slug: str, version: Optional[str]) -> str:
+def _resolve_version(
+    client: PhysioNetClient, slug: str, version: Optional[str], retries: int = 3
+) -> str:
     """Resolve the version to download, defaulting to the latest."""
-    versions = client.projects.list_versions(slug)
+    versions = client.projects.list_versions(slug, retries=retries)
 
     if not versions:
         raise NotFoundError(f"No versions found for project '{slug}'")
@@ -811,42 +813,13 @@ def _configure_retry_adapter(
     ``Retry(0, read=False)`` so a later download on the same session does not
     keep retrying.
     """
-    prefix = (adapter_prefix or _download_adapter_prefix(url)).rstrip("/") + "/"
-    cache = getattr(session, _DOWNLOAD_ADAPTER_CACHE_ATTR, None)
-    if retries <= 0:
-        if isinstance(cache, dict):
-            adapter = cache.get(prefix)
-            if isinstance(adapter, HTTPAdapter):
-                adapter.max_retries = Retry(total=0, read=False)
-        return None
-
-    if not isinstance(cache, dict):
-        cache = {}
-        setattr(session, _DOWNLOAD_ADAPTER_CACHE_ATTR, cache)
-
-    adapter = cache.get(prefix)
-    if adapter is None:
-        adapter = HTTPAdapter(
-            max_retries=Retry(
-                total=retries,
-                backoff_factor=1,
-                status_forcelist=[502, 503, 504],
-                raise_on_status=False,
-            )
-        )
-        cache[prefix] = adapter
-        session.mount(prefix, adapter)
-    else:
-        # The adapter is dedicated to this download prefix, so changing its
-        # policy does not modify a shared adapter or discard its pool.
-        adapter.max_retries = Retry(
-            total=retries,
-            backoff_factor=1,
-            status_forcelist=[502, 503, 504],
-            raise_on_status=False,
-        )
-
-    return adapter
+    return configure_retry_adapter(
+        session,
+        url,
+        retries,
+        adapter_prefix=adapter_prefix or _download_adapter_prefix(url),
+        cache_attr=_DOWNLOAD_ADAPTER_CACHE_ATTR,
+    )
 
 
 def _configure_manifest_retries(client: PhysioNetClient, slug: str, version: str, retries: int) -> None:

@@ -104,7 +104,10 @@ class PhysioNetClient:
         response = self.session.request(method=method, url=url, params=params, timeout=self.timeout, **kwargs)
 
         if response.status_code >= 400:
-            self._handle_error(response)
+            try:
+                self._handle_error(response)
+            finally:
+                response.close()
 
         return response
 
