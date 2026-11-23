@@ -522,6 +522,27 @@ con.register_filesystem(fsspec.filesystem("physionet"))
 con.sql("select count(*) from read_csv_auto('physionet://mimic-iv-demo/2.2/hosp/admissions.csv.gz')")
 ```
 
+**Read part of a file.** By default a file is downloaded in full the first
+time it is opened. To read only part of a large file, such as a few seconds of
+a long recording, pass `stream=True` as a storage option (or to
+`fsspec.filesystem("physionet")`, or to `fs.open()` for one file). The parts
+that are needed are then read with HTTP range requests, from the same source as
+downloads (the AWS open data mirror for open datasets, and PhysioNet with your
+sign-in for restricted ones):
+
+```python
+import fsspec
+
+with fsspec.open("physionet://mitdb/1.0.0/100.dat", stream=True) as f:
+    f.seek(1_000_000)
+    data = f.read(10_800)
+```
+
+Requests start small and grow while a file is read from start to end, so
+reading a whole file this way also takes few requests. Parts read this way are
+not checked against `SHA256SUMS.txt` and are not kept in the cache, but a file
+that is already in the cache is read from there.
+
 Use `latest` as the version to get the newest one (looked up online). Pin a
 version for reproducible results. The filesystem is read-only. A missing
 dataset, version or file raises `FileNotFoundError`, and a dataset your
