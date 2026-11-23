@@ -89,19 +89,22 @@ class ProjectsAPI:
 
         Args:
             project_slug: Project identifier
-            retries: Number of retries for transient server errors (0 to disable)
+            retries: Number of retries for 502, 503 and 504 responses (0 to
+                disable). Connection errors and timeouts are raised at once.
 
         Returns:
             List of ProjectVersion objects
         """
         endpoint = f"projects/{project_slug}/versions/"
-        url = f"{self.client.api_base}projects/{project_slug}/versions/"
+        # One adapter, and so one connection pool, for every project's requests
+        prefix = f"{self.client.api_base}projects/"
         configure_retry_adapter(
             self.client.session,
-            url,
+            prefix,
             retries,
-            adapter_prefix=url,
+            adapter_prefix=prefix,
             cache_attr=_VERSION_ADAPTER_CACHE_ATTR,
+            status_only=True,
         )
         response = self.client._make_request("GET", endpoint)
         try:
