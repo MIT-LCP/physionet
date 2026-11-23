@@ -8,7 +8,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
-from typing import List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -129,9 +129,11 @@ def download(
     retries: int = 3,
     jobs: int = 1,
     show_progress: bool = True,
+    files: Optional[Union[List[str], Dict[str, str]]] = None,
+    verbose: bool = True,
 ) -> Path:
     """
-    Download a PhysioNet project.
+    Download a PhysioNet project, or some of its files.
 
     Args:
         slug: Project identifier (e.g., "mimic-iv-demo")
@@ -153,19 +155,33 @@ def download(
             more than one, only the overall progress bar is shown.
         show_progress: Show progress bars (default True). The messages about
             the download (such as the summary at the end) are still printed.
+        files: Download only these files, given as paths within the project
+            (e.g. ["100.hea", "100.dat"]). They are looked up in the project's
+            checksum list, and include and exclude still apply. A dict also
+            says where to save each file, relative to output_dir, instead of
+            under output_dir/<slug>-<version> (e.g. {"data/100.hea": "100.hea"}).
+        verbose: Print messages about the download, such as where files are
+            saved and the summary at the end (default True). Errors are
+            printed either way, and progress bars are set by show_progress.
 
     Returns:
-        Path to the output directory
+        Path to the folder the files were saved in: output_dir/<slug>-<version>,
+        or output_dir if files is a dict
 
     Raises:
         NotFoundError: If the project or version is not found
         ForbiddenError: If access is denied before file transfers start
         DownloadError: If one or more file transfers fail, including access denial
         KeyboardInterrupt: If the download is interrupted
-        ValueError: If jobs is not between 1 and MAX_JOBS
+        FileNotFoundError: If the project has no file named in files
+        ValueError: If jobs is not between 1 and MAX_JOBS, or if files is a dict
+            that saves a file outside output_dir or two files in one place
     """
     if isinstance(jobs, bool) or not isinstance(jobs, int) or not 1 <= jobs <= MAX_JOBS:
         raise ValueError(f"jobs must be a whole number from 1 to {MAX_JOBS}, not {jobs!r}")
+    # Where to save each file, relative to the destination, if not its path
+    saved_as = _check_saved_as(files) if isinstance(files, dict) else None
+    say = print if verbose else _say_nothing
     username, password, token = resolve_credentials(username, password, token)
     client = PhysioNetClient(base_url=base_url, username=username, password=password, token=token)
 
@@ -174,6 +190,7 @@ def download(
         version = _resolve_version(client, slug, version)
 
         # Get file manifest
+        requested = files
         try:
             files = _get_file_manifest(client, slug, version, retries)
         except requests.HTTPError as exc:
@@ -184,15 +201,18 @@ def download(
                 ) from exc
             raise
 
+        if requested is not None:
+            files = _select_files(files, requested, slug, version)
+
         # Filter files
         files = _filter_files(files, include=include, exclude=exclude)
 
         if not files:
-            print("No files match the specified filters.")
+            say("No files match the specified filters.")
             return Path(output_dir)
 
         # Select source
-        source_type, source_base = _select_source(client, slug, version, source, username)
+        source_type, source_base = _select_source(client, slug, version, source, username, verbose=verbose)
 
         if source_type == "s3":
             source_label = f"s3://{source_base}/{slug}/{version}"
@@ -200,12 +220,15 @@ def download(
             source_label = source_base
 
         # Prepare output directory
-        dest = Path(output_dir) / f"{slug}-{version}"
+        dest = Path(output_dir) if saved_as is not None else Path(output_dir) / f"{slug}-{version}"
         total_size = 0
+
+        def local_path(filepath: str) -> str:
+            return saved_as[filepath] if saved_as is not None else filepath
 
         # A checksum list could name paths outside the project folder (from a
         # compromised or untrusted server). Never write those.
-        unsafe = _unsafe_paths(files, dest)
+        unsafe = _unsafe_paths(files, dest, local_path)
         if unsafe:
             print(
                 f"Not downloading {len(unsafe)} file(s) whose paths would be written outside "
@@ -215,22 +238,27 @@ def download(
             unsafe_set = set(unsafe)
             files = [entry for entry in files if entry[0] not in unsafe_set]
 
+        # Different paths can still be one file, through a symbolic link
+        # inside dest. Refuse that before downloading anything.
+        _check_distinct_destinations(files, dest, local_path)
+
         if dry_run:
             print(f"Project: {slug} v{version}")
             print(f"Source: {source_label}")
             print(f"Destination: {dest}")
             print(f"Files ({len(files)}):")
             for filepath, checksum in files:
-                print(f"  {filepath}")
+                saved = f" -> {local_path(filepath)}" if saved_as is not None else ""
+                print(f"  {filepath}{saved}")
             return dest
 
         dest.mkdir(parents=True, exist_ok=True)
 
         # Download files
-        print(f"Downloading {slug} v{version} ({len(files)} files)")
-        print(f"Source: {source_label}")
-        print(f"Destination: {dest}")
-        print()
+        say(f"Downloading {slug} v{version} ({len(files)} files)")
+        say(f"Source: {source_label}")
+        say(f"Destination: {dest}")
+        say()
 
         skipped = 0
         downloaded = 0
@@ -244,7 +272,7 @@ def download(
 
         def fetch(filepath: str, expected_hash: str, **options) -> Optional[int]:
             """Download one file; return its size, or None if it was already there."""
-            file_dest = dest / filepath
+            file_dest = dest / local_path(filepath)
             file_dest.parent.mkdir(parents=True, exist_ok=True)
 
             # Skip files that already exist and pass checksum
@@ -307,11 +335,11 @@ def download(
         order = {filepath: index for index, (filepath, _) in enumerate(files)}
         failures.sort(key=lambda failure: order.get(failure[0], -1))
 
-        print()
+        say()
         outcome = "Incomplete" if failures else "Complete"
-        print(f"{outcome}: {downloaded} downloaded, {skipped} skipped, {len(failures)} failed")
+        say(f"{outcome}: {downloaded} downloaded, {skipped} skipped, {len(failures)} failed")
         if total_size > 0:
-            print(f"Total downloaded: {format_size(total_size)}")
+            say(f"Total downloaded: {format_size(total_size)}")
 
         if failures:
             raise DownloadError(dest, failures, downloaded, skipped)
@@ -332,18 +360,91 @@ def _is_safe_path(path: str) -> bool:
     )
 
 
-def _unsafe_paths(files: List[Tuple[str, str]], dest: Path) -> List[str]:
+def _unsafe_paths(
+    files: List[Tuple[str, str]], dest: Path, local_path: Callable[[str], str] = lambda path: path
+) -> List[str]:
     """Paths in the checksum list that would be written outside dest.
 
-    A path is unsafe if it is not a plain relative path, or if it resolves
-    outside dest, for example through a symbolic link inside dest.
+    A path is unsafe if it, or the path it is saved as (local_path), is not a
+    plain relative path, or if it resolves outside dest, for example through a
+    symbolic link inside dest.
     """
     root = dest.resolve()
     unsafe = []
     for filepath, _ in files:
-        if not _is_safe_path(filepath) or not (dest / filepath).resolve().is_relative_to(root):
+        local = local_path(filepath)
+        if (
+            not _is_safe_path(filepath)
+            or not _is_safe_path(local)
+            or not (dest / local).resolve().is_relative_to(root)
+        ):
             unsafe.append(filepath)
     return unsafe
+
+
+def _check_distinct_destinations(
+    files: List[Tuple[str, str]], dest: Path, local_path: Callable[[str], str] = lambda path: path
+) -> None:
+    """Raise ValueError if two files would be saved as one, after following symbolic links."""
+    seen: Dict[Path, str] = {}
+    for filepath, _ in files:
+        target = (dest / local_path(filepath)).resolve()
+        if target in seen:
+            raise ValueError(
+                f"{seen[target]!r} and {filepath!r} would both be saved as {target}, "
+                "through a symbolic link in the destination"
+            )
+        seen[target] = filepath
+
+
+def _check_saved_as(saved_as: Dict[str, str]) -> Dict[str, str]:
+    """
+    Check the paths that download(files={...}) saves files as.
+
+    Each must be a plain relative path, written as PurePosixPath would write
+    it, so that two different strings never name the same file: "a//b",
+    "./b" and "b/" are refused. Two paths that differ only in case are also
+    refused, since they are the same file on macOS and Windows.
+    """
+    unsafe = [
+        local for local in saved_as.values() if not _is_safe_path(local) or str(PurePosixPath(local)) != local
+    ]
+    if unsafe:
+        raise ValueError(
+            "Files can only be saved inside output_dir, as relative paths without '..', '.', "
+            "'//' or a trailing '/': " + ", ".join(repr(local) for local in unsafe[:5])
+        )
+    seen: Dict[str, Tuple[str, str]] = {}
+    for filepath, local in saved_as.items():
+        key = local.casefold()
+        if key in seen:
+            other, other_local = seen[key]
+            raise ValueError(
+                f"{other!r} and {filepath!r} would both be saved as {local!r}"
+                if other_local == local
+                else f"{other!r} and {filepath!r} would be saved as {other_local!r} and {local!r}, "
+                "which are the same file where file names ignore case (macOS and Windows)"
+            )
+        seen[key] = (filepath, local)
+    return saved_as
+
+
+def _select_files(
+    manifest: List[Tuple[str, str]], requested: Union[List[str], Dict[str, str]], slug: str, version: str
+) -> List[Tuple[str, str]]:
+    """The checksum list entries of the requested files, in the order requested."""
+    checksums = dict(manifest)
+    wanted = list(dict.fromkeys(requested))
+    missing = [path for path in wanted if path not in checksums]
+    if missing:
+        shown = ", ".join(repr(path) for path in missing[:5])
+        more = f" and {len(missing) - 5} more" if len(missing) > 5 else ""
+        raise FileNotFoundError(f"{slug} v{version} has no file {shown}{more}")
+    return [(path, checksums[path]) for path in wanted]
+
+
+def _say_nothing(*args, **kwargs) -> None:
+    """Stand in for print() when download(verbose=False)."""
 
 
 def _download_in_parallel(

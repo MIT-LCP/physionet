@@ -567,6 +567,16 @@ download("mitdb", output_dir="/data", jobs=4)
 # Without progress bars (the summary is still printed)
 download("mitdb", output_dir="/data", show_progress=False)
 
+# Only some files, looked up in the checksum list
+download("mitdb", "1.0.0", output_dir="/data", files=["100.hea", "100.dat", "100.atr"])
+
+# Choose where each file is saved, relative to output_dir, instead of under
+# /data/mitdb-1.0.0, and print nothing but errors
+download(
+    "mitdb", "1.0.0", output_dir="/data", files={"100.hea": "ecg/100.hea"},
+    verbose=False, show_progress=False,
+)
+
 # Handle a partial failure while keeping successfully downloaded files
 from physionet.download import DownloadError
 
