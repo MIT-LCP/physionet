@@ -18,11 +18,15 @@ VERSIONS = [{"slug": "demo", "title": "Demo", "version": "1.0", "abstract": "", 
 
 @pytest.fixture
 def server(tmp_path, monkeypatch):
-    """A local PhysioNet whose checksum list fails a given number of times first."""
+    """A local PhysioNet that can fail the checksum list or a file before succeeding."""
     monkeypatch.setenv("PHYSIONET_CACHE", str(tmp_path / "cache"))
     for name in ("PHYSIONET_USERNAME", "PHYSIONET_PASSWORD", "PHYSIONET_TOKEN"):
         monkeypatch.delenv(name, raising=False)
-    state = {"failures": 1, "status": 502, "manifest_requests": 0}
+    state = {
+        "deployment": "", "status": 502,
+        "manifest_failures": 1, "file_failures": 0,
+        "manifest_requests": 0, "file_requests": 0,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -36,16 +40,21 @@ def server(tmp_path, monkeypatch):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path == "/api/v1/projects/demo/versions/":
+            deployment = state["deployment"]
+            if self.path == f"{deployment}/api/v1/projects/demo/versions/":
                 self.send(200, json.dumps(VERSIONS).encode(), "application/json")
-            elif self.path == "/files/demo/1.0/SHA256SUMS.txt":
+            elif self.path == f"{deployment}/files/demo/1.0/SHA256SUMS.txt":
                 state["manifest_requests"] += 1
-                if state["manifest_requests"] <= state["failures"]:
+                if state["manifest_requests"] <= state["manifest_failures"]:
                     self.send(state["status"])
                 else:
                     self.send(200, MANIFEST)
-            elif self.path == "/files/demo/1.0/notes.txt":
-                self.send(200, NOTES)
+            elif self.path == f"{deployment}/files/demo/1.0/notes.txt":
+                state["file_requests"] += 1
+                if state["file_requests"] <= state["file_failures"]:
+                    self.send(state["status"])
+                else:
+                    self.send(200, NOTES)
             else:
                 self.send(404)
 
@@ -100,6 +109,20 @@ def test_download_retries_the_checksum_list(server, tmp_path):
     )
     assert (destination / "notes.txt").read_bytes() == NOTES
     assert server["manifest_requests"] == 2
+
+
+@pytest.mark.parametrize(("manifest_failures", "file_failures"), [(1, 0), (0, 1)], ids=["manifest", "file"])
+def test_download_retries_on_custom_deployment_path(server, tmp_path, manifest_failures, file_failures):
+    server.update(
+        deployment="/lab~/My%20API", status=503, manifest_failures=manifest_failures, file_failures=file_failures,
+    )
+    destination = physionet.download(
+        "demo", version="1.0", retries=1, output_dir=str(tmp_path / "out"),
+        base_url=f"{server['base_url']}/lab%7E/My API", source="physionet", show_progress=False,
+    )
+    assert server["manifest_requests"] == 1 + manifest_failures
+    assert server["file_requests"] == 1 + file_failures
+    assert (destination / "notes.txt").read_bytes() == NOTES
 
 
 def test_retries_can_be_turned_off(server):

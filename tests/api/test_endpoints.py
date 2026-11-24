@@ -24,7 +24,7 @@ def client():
 
 @pytest.fixture
 def version_server():
-    state = {"statuses": [], "requests": 0}
+    state = {"statuses": [], "requests": 0, "deployment": ""}
     versions = [{
         "slug": "demo",
         "title": "Demo",
@@ -40,7 +40,7 @@ def version_server():
             pass
 
         def do_GET(self):
-            if self.path != "/api/v1/projects/demo/versions/":
+            if self.path != f"{state['deployment']}/api/v1/projects/demo/versions/":
                 body = b"not found"
                 status = 404
             else:
@@ -54,7 +54,7 @@ def version_server():
             self.wfile.write(body)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}", state
@@ -216,11 +216,23 @@ def test_list_versions(client):
         assert versions[1].version == "2.0"
 
 
-def test_list_versions_retries_transient_status(version_server):
+@pytest.mark.parametrize(
+    ("deployment", "wire_path"),
+    [
+        ("", ""),
+        ("/My API", "/My%20API"),
+        ("/café", "/caf%C3%A9"),
+        ("/%73ite", "/site"),
+        ("/lab%2Fwest", "/lab%2Fwest"),
+    ],
+    ids=["root", "space", "unicode", "escaped-unreserved", "escaped-slash"],
+)
+def test_list_versions_retries_transient_status(version_server, deployment, wire_path):
     base_url, state = version_server
+    state["deployment"] = wire_path
     state["statuses"] = [503]
-    client = PhysioNetClient(base_url=base_url)
-    versions_url = f"{base_url}/api/v1/projects/demo/versions/"
+    client = PhysioNetClient(base_url=base_url + deployment)
+    versions_url = f"{base_url}{wire_path}/api/v1/projects/demo/versions/"
     default_adapter = client.session.get_adapter("http://")
 
     try:
@@ -252,6 +264,17 @@ def test_list_versions_retries_zero_makes_one_request(version_server):
     assert state["requests"] == 1
     assert client.session.get_adapter(versions_url) is default_adapter
     assert not hasattr(client.session, "_physionet_version_adapters")
+
+
+def test_list_versions_disables_cached_retries_on_custom_deployment(version_server):
+    base_url, state = version_server
+    state["deployment"] = "/My%20API"
+    with PhysioNetClient(base_url=base_url + "/My API", use_saved_login=False) as client:
+        client.projects.list_versions("demo", retries=1)
+        state["statuses"] = [503, 200]
+        with pytest.raises(PhysioNetAPIError, match="HTTP 503"):
+            client.projects.list_versions("demo", retries=0)
+    assert state["requests"] == 2  # One successful lookup, then one failed lookup.
 
 
 def test_list_versions_closes_response(client):
