@@ -5,6 +5,7 @@ import requests
 from requests.auth import AuthBase, HTTPBasicAuth
 
 from physionet.auth import OriginBearerAuth, SavedLoginAuth, allows_tokens, load_saved_login, origin as _origin
+from physionet.retry import RetrySession
 from .exceptions import (
     PhysioNetAPIError,
     BadRequestError,
@@ -58,7 +59,7 @@ class PhysioNetClient:
         self.base_url = base_url.rstrip("/")
         self.api_base = f"{self.base_url}/api/v1/"
         self.timeout = timeout
-        self.session = requests.Session()
+        self.session = RetrySession()
         # How requests are authenticated: "password", "token", "login", or None.
         self.auth_method: Optional[str] = None
 

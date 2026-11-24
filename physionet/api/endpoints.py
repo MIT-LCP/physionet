@@ -3,10 +3,7 @@ from urllib.parse import quote
 
 from physionet.api.exceptions import PhysioNetAPIError
 from physionet.api.models import PublishedProject, ProjectVersion, ProjectDetail, ProjectAccessStatus
-from physionet.retry import configure_retry_adapter
-
-
-_VERSION_ADAPTER_CACHE_ATTR = "_physionet_version_adapters"
+from physionet.retry import version_retries
 
 
 class ProjectsAPI:
@@ -98,15 +95,8 @@ class ProjectsAPI:
         endpoint = f"projects/{project_slug}/versions/"
         # One adapter, and so one connection pool, for every project's requests
         prefix = f"{self.client.api_base}projects/"
-        configure_retry_adapter(
-            self.client.session,
-            prefix,
-            retries,
-            adapter_prefix=prefix,
-            cache_attr=_VERSION_ADAPTER_CACHE_ATTR,
-            status_only=True,
-        )
-        response = self.client._make_request("GET", endpoint)
+        with version_retries(self.client.session, prefix, retries):
+            response = self.client._make_request("GET", endpoint)
         try:
             return [
                 ProjectVersion(
