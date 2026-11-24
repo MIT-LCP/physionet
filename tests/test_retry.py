@@ -53,3 +53,32 @@ def test_new_and_reused_adapters_get_the_same_policy():
         names += ("respect_retry_after_header",)
         for name in names:
             assert getattr(new.max_retries, name) == getattr(expected, name)
+
+
+@pytest.mark.parametrize(("first", "second"), [("My API", "My%20API"), ("My%20API", "My API")])
+def test_equivalent_deployment_paths_reuse_the_retry_adapter(first, second):
+    with requests.Session() as session:
+        initial_mounts = len(session.adapters)
+        first_url = f"https://example.org/{first}/one.txt"
+        second_url = f"https://example.org/{second}/two.txt"
+        adapter = configure_retry_adapter(session, first_url, 2)
+        assert session.get_adapter("https://example.org/My%20API/one.txt") is adapter
+        pool = adapter.poolmanager
+        assert configure_retry_adapter(session, second_url, 1) is adapter
+        assert adapter.max_retries.total == 1
+        configure_retry_adapter(session, first_url, 0)
+        assert adapter.max_retries.total == 0
+        assert adapter.max_retries.read is False
+        assert adapter.poolmanager is pool
+        assert len(session.adapters) == initial_mounts + 1
+
+
+@pytest.mark.parametrize("subpath", ["", "nested/"], ids=["same-prefix", "more-specific"])
+def test_caller_adapter_wins_on_encoded_deployment_path(subpath):
+    with requests.Session() as session:
+        prefix = "https://example.org/My%20API/"
+        caller_adapter = requests.adapters.HTTPAdapter(max_retries=5)
+        session.mount(prefix + subpath, caller_adapter)
+        configure_retry_adapter(session, "https://example.org/My API/file.txt", 1)
+        assert session.get_adapter(prefix + subpath + "file.txt") is caller_adapter
+        assert caller_adapter.max_retries.total == 5

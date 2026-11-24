@@ -49,20 +49,30 @@ def configure_retry_adapter(
     status_only: bool = False,
 ) -> Optional[HTTPAdapter]:
     """Mount and cache a retry adapter scoped to a URL prefix, using retry_policy()."""
-    prefix = (adapter_prefix or url.rsplit("/", 1)[0]).rstrip("/") + "/"
+    raw_prefix = (adapter_prefix or url.rsplit("/", 1)[0]).rstrip("/") + "/"
     cache = getattr(session, cache_attr, None)
-    if retries <= 0:
-        if isinstance(cache, dict):
-            adapter = cache.get(prefix)
-            if isinstance(adapter, HTTPAdapter):
-                adapter.max_retries = Retry(total=0, read=False)
-        return None
-
     if not isinstance(cache, dict):
+        if retries <= 0:
+            return None
         cache = {}
         setattr(session, cache_attr, cache)
 
+    prefix = raw_prefix
+    if raw_prefix not in cache:
+        # Requests selects the adapter after encoding the request URL.
+        prepared = requests.PreparedRequest()
+        prepared.prepare_url(raw_prefix, None)
+        assert prepared.url is not None
+        prefix = prepared.url
+
     adapter = cache.get(prefix)
+    # A caller may already have mounted an adapter at the encoded spelling.
+    if prefix != raw_prefix and session.adapters.get(prefix, adapter) is not adapter:
+        return None
+    if retries <= 0:
+        if isinstance(adapter, HTTPAdapter):
+            adapter.max_retries = Retry(total=0, read=False)
+        return None
     if adapter is None:
         adapter = HTTPAdapter(max_retries=retry_policy(retries, status_only))
         cache[prefix] = adapter
