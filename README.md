@@ -370,8 +370,11 @@ your sign-in, as for downloads). Without a dataset and version, a
 list, not that the list itself is PhysioNet's.
 
 Files that are not in the checksum list are listed but do not count as
-problems. It exits with status 1 if a file is missing, damaged or unreadable;
-`--json` lists every file. In Python:
+problems. A file that is a symbolic link to somewhere outside the folder counts
+as a problem, since the copy does not hold it. It exits with status 1 if a file
+is missing, damaged, unreadable or linked from outside, or if no files were
+checked (an empty checksum list, or `--include` matching nothing); `--json`
+lists every file. In Python:
 
 ```python
 result = physionet.verify("mimic-iv-demo-2.2")

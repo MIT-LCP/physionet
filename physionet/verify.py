@@ -52,14 +52,26 @@ class VerifyResult:
     """Files in the folder that are not in the checksum list."""
     unreadable: List[Tuple[str, str]] = field(default_factory=list)
     """Files that could not be read, and why."""
+    outside: List[str] = field(default_factory=list)
+    """Files that are symbolic links to somewhere outside the folder, so the
+    copy does not hold them. They are not read."""
+
+    @property
+    def checked(self) -> int:
+        """How many files in the checksum list were checked (after include and exclude)."""
+        return len(self.matched) + len(self.mismatched) + len(self.missing) + len(self.unreadable) + len(
+            self.outside
+        )
 
     @property
     def passed(self) -> bool:
         """Whether every file in the checksum list is present and matches.
 
-        Extra files do not count against this.
+        False if no files were checked, for example because the checksum list
+        is empty or include matches none of its files. Extra files do not count
+        against this.
         """
-        return not (self.mismatched or self.missing or self.unreadable)
+        return self.checked > 0 and not (self.mismatched or self.missing or self.unreadable or self.outside)
 
     def to_dict(self) -> dict:
         return {
@@ -73,6 +85,8 @@ class VerifyResult:
             "missing": self.missing,
             "extra": self.extra,
             "unreadable": [{"path": path, "error": error} for path, error in self.unreadable],
+            "outside": self.outside,
+            "checked": self.checked,
         }
 
 
@@ -148,12 +162,17 @@ def verify(
 
     result = VerifyResult(path=folder, source=source, slug=slug, version=version)
     present = []
+    root = os.path.realpath(folder)
     for name in expected:
         file = folder.joinpath(*PurePosixPath(name).parts)
-        if file.is_file():
-            present.append((name, file))
-        else:
+        if not file.is_file():
             result.missing.append(name)
+        elif not _is_inside(root, file):
+            # A link (or a linked folder) to a file elsewhere: reading it would
+            # pass the check without the copy holding the file.
+            result.outside.append(name)
+        else:
+            present.append((name, file))
 
     local = [(name, "") for name in _local_files(folder) if name != CHECKSUM_FILE]
     result.extra = sorted(name for name, _ in _filter_files(local, include, exclude) if name not in expected)
@@ -191,7 +210,7 @@ def verify(
             if jobs != 1:
                 executor.shutdown(wait=True, cancel_futures=True)
 
-    for names in (result.matched, result.mismatched, result.missing):
+    for names in (result.matched, result.mismatched, result.missing, result.outside):
         names.sort()
     result.unreadable.sort()
     return result
@@ -264,6 +283,12 @@ def _checksums(folder, slug, version, checksums, cache_dir, username, password, 
         f"Cannot tell which dataset {folder} holds. Give the dataset and version "
         "(e.g. physionet verify FOLDER mimiciv --version 3.1), or a checksum file."
     )
+
+
+def _is_inside(root: str, file: Path) -> bool:
+    """Whether a file, with every symbolic link followed, is inside root (a real path)."""
+    target = os.path.realpath(file)
+    return os.path.commonpath([root, target]) == root
 
 
 def _local_files(folder: Path) -> List[str]:

@@ -953,7 +953,7 @@ def _handle_verify(args):
         if len(names) > VERIFY_MAX_LISTED:
             print(f"    and {len(names) - VERIFY_MAX_LISTED} more (--json lists them all)")
 
-    checked = len(result.matched) + len(result.mismatched) + len(result.missing) + len(result.unreadable)
+    checked = result.checked
     if result.matched:
         print(f"✓ {len(result.matched)} of {checked} file(s) match")
     if result.mismatched:
@@ -962,6 +962,11 @@ def _handle_verify(args):
     if result.missing:
         print(f"✗ {len(result.missing)} file(s) are missing:")
         listing(result.missing)
+    if result.outside:
+        print(f"✗ {len(result.outside)} file(s) are links to files outside the folder, so the copy "
+              "does not hold them:")
+        listing(result.outside)
+        print("    Replace these links with copies of the files (physionet download does not write through links).")
     if result.unreadable:
         print(f"✗ {len(result.unreadable)} file(s) could not be read:")
         listing([f"{name}: {error}" for name, error in result.unreadable])
@@ -969,13 +974,19 @@ def _handle_verify(args):
         print(f"ℹ {len(result.extra)} file(s) are not in the checksum list:")
         listing(result.extra)
     if checked == 0:
-        print("No files in the checksum list match --include and --exclude.")
+        if args.include or args.exclude:
+            print("✗ No files were checked: none in the checksum list match --include and --exclude.")
+        else:
+            print("✗ No files were checked: the checksum list is empty.")
 
     if result.passed:
         return 0
-    if result.slug and result.path.resolve().name == f"{result.slug}-{result.version}":
+    repairable = result.mismatched or result.missing
+    if repairable and result.slug and result.path.resolve().name == f"{result.slug}-{result.version}":
         command = (f"physionet download {result.slug} --version {result.version} "
                    f"--output {_quote(str(result.path.resolve().parent))}")
+        if args.base_url.rstrip("/") != DEFAULT_BASE_URL:
+            command += f" --base-url {_quote(args.base_url)}"
         for pattern in args.include or []:
             command += f" --include {_quote(pattern)}"
         for pattern in args.exclude or []:

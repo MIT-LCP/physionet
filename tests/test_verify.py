@@ -205,6 +205,46 @@ def test_server_errors(tmp_path):
             verify(folder, show_progress=False)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symbolic links need extra rights on Windows")
+def test_links_to_files_outside_the_folder_do_not_pass(tmp_path):
+    folder = make_copy(tmp_path / "demo-1.0")
+    elsewhere = make_copy(tmp_path / "elsewhere")
+    (folder / "100.hea").unlink()
+    (folder / "100.hea").symlink_to(elsewhere / "100.hea")
+    # A linked folder too
+    for path in (folder / "sub").iterdir():
+        path.unlink()
+    (folder / "sub").rmdir()
+    (folder / "sub").symlink_to(elsewhere / "sub", target_is_directory=True)
+    # A link to a file inside the folder is fine
+    (folder / "RECORDS").unlink()
+    (folder / "records-copy").write_bytes(FILES["RECORDS"])
+    (folder / "RECORDS").symlink_to(folder / "records-copy")
+
+    with rm.Mocker() as mocker:
+        mock_checksums(mocker)
+        result = verify(folder, show_progress=False)
+
+    assert not result.passed
+    assert result.outside == ["100.hea", "sub/100.dat"]
+    assert result.matched == ["RECORDS"]
+    assert result.checked == 3
+
+
+def test_checking_no_files_does_not_pass(tmp_path):
+    folder = make_copy(tmp_path / "demo-1.0")
+    with rm.Mocker() as mocker:
+        mock_checksums(mocker)
+        nothing_included = verify(folder, include=["*.nope"], show_progress=False)
+    empty_list = tmp_path / "empty.txt"
+    empty_list.write_text("")
+    nothing_listed = verify(folder, checksums=str(empty_list), show_progress=False)
+
+    for result in (nothing_included, nothing_listed):
+        assert result.checked == 0
+        assert not result.passed
+
+
 def test_bad_arguments(tmp_path):
     with pytest.raises(FileNotFoundError):
         verify(tmp_path / "missing", "demo", "1.0")
@@ -260,6 +300,52 @@ def test_cli_failing_copy_suggests_a_download(tmp_path, capsys):
     assert "✗ 1 file(s) are missing:\n    RECORDS\n" in out
     assert "notes.txt" not in out.split("To download")[0]
     assert f"physionet download demo --version 1.0 --output {tmp_path} --exclude 'notes*'" in out
+
+
+def test_cli_checking_no_files_fails(tmp_path, capsys):
+    folder = make_copy(tmp_path / "demo-1.0")
+    with rm.Mocker() as mocker:
+        mock_checksums(mocker)
+        assert run_cli("verify", str(folder), "--include", "*.nope") == 1
+    out = capsys.readouterr().out
+    assert "✗ No files were checked: none in the checksum list match --include and --exclude." in out
+    assert "To download" not in out
+
+    (tmp_path / "empty.txt").write_text("")
+    assert run_cli("verify", str(folder), "--checksums", str(tmp_path / "empty.txt")) == 1
+    assert "✗ No files were checked: the checksum list is empty." in capsys.readouterr().out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symbolic links need extra rights on Windows")
+def test_cli_reports_links_outside_the_folder(tmp_path, capsys):
+    folder = make_copy(tmp_path / "demo-1.0")
+    (tmp_path / "elsewhere.hea").write_bytes(FILES["100.hea"])
+    (folder / "100.hea").unlink()
+    (folder / "100.hea").symlink_to(tmp_path / "elsewhere.hea")
+    with rm.Mocker() as mocker:
+        mock_checksums(mocker)
+        assert run_cli("verify", str(folder)) == 1
+    out = capsys.readouterr().out
+    assert "✗ 1 file(s) are links to files outside the folder, so the copy does not hold them:\n    100.hea\n" in out
+    assert "Replace these links with copies of the files" in out
+    # physionet download cannot repair links, so it is not suggested for them alone
+    assert "To download" not in out
+
+
+def test_cli_download_hint_keeps_the_server(tmp_path, capsys):
+    folder = make_copy(tmp_path / "demo-1.0")
+    (folder / "RECORDS").unlink()
+    with rm.Mocker() as mocker:
+        mocker.get("http://localhost:8000/files/demo/1.0/SHA256SUMS.txt", text=manifest())
+        assert run_cli("verify", str(folder), "--base-url", "http://localhost:8000/") == 1
+    out = capsys.readouterr().out
+    assert (f"physionet download demo --version 1.0 --output {tmp_path} --base-url http://localhost:8000/"
+            in out)
+
+    with rm.Mocker() as mocker:
+        mock_checksums(mocker)
+        assert run_cli("verify", str(folder)) == 1
+    assert "--base-url" not in capsys.readouterr().out
 
 
 def test_cli_lists_at_most_twenty_files_per_problem(tmp_path, capsys):
