@@ -45,6 +45,25 @@ def _positive_int(value):
     return number
 
 
+_AGE_UNITS = {"h": 1 / 24, "d": 1, "w": 7}
+
+
+def _age(value):
+    """Parse --older-than: a number of days, or a number followed by h, d or w."""
+    from datetime import timedelta
+
+    text = value.strip().lower()
+    unit = text[-1] if text and text[-1] in _AGE_UNITS else "d"
+    number = text[:-1] if text and text[-1] in _AGE_UNITS else text
+    try:
+        days = float(number) * _AGE_UNITS[unit]
+    except ValueError:
+        days = -1
+    if not days >= 0 or days == float("inf"):
+        raise argparse.ArgumentTypeError(f"must be an age such as 90d, 2w or 12h, not {value!r}")
+    return timedelta(days=days)
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -207,6 +226,30 @@ def main():
         "--no-version-check", action="store_true", help="Do not ask PyPI for the latest release"
     )
 
+    # Cache subcommand
+    cache_parser = subparsers.add_parser(
+        "cache", help="List or delete files kept by physionet.load(), fetch() and physionet:// paths"
+    )
+    cache_subparsers = cache_parser.add_subparsers(dest="cache_command", metavar="{list,clean,dir}")
+    cache_list_parser = cache_subparsers.add_parser("list", help="List the dataset versions in the cache (default)")
+    cache_list_parser.add_argument("slug", nargs="?", help="Only list this dataset")
+    cache_list_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
+    cache_clean_parser = cache_subparsers.add_parser("clean", help="Delete files from the cache")
+    cache_clean_parser.add_argument("slug", nargs="?", help="Only delete files of this dataset")
+    cache_clean_parser.add_argument("--version", help="Only delete files of this version (needs a dataset)")
+    cache_clean_parser.add_argument(
+        "--older-than", type=_age, metavar="AGE",
+        help="Only delete files downloaded longer ago than this, e.g. 90d, 2w or 12h",
+    )
+    cache_clean_parser.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
+    cache_clean_parser.add_argument("-y", "--yes", action="store_true", help="Do not ask for confirmation")
+    cache_dir_parser = cache_subparsers.add_parser("dir", help="Print the cache folder")
+    for parser_ in (cache_parser, cache_list_parser, cache_clean_parser, cache_dir_parser):
+        parser_.add_argument(
+            "--cache-dir", default=argparse.SUPPRESS,
+            help="Cache folder (default: PHYSIONET_CACHE, or ~/.cache/physionet)",
+        )
+
     # Validate subcommand
     validate_parser = subparsers.add_parser(
         "validate",
@@ -263,6 +306,8 @@ def main():
         return _handle_preview(args)
     elif args.command == "doctor":
         return _handle_doctor(args)
+    elif args.command == "cache":
+        return _handle_cache(args)
     elif args.command == "validate":
         return _handle_validate(args)
     elif args.command is None:
@@ -706,6 +751,131 @@ def _handle_download(args):
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+
+def _handle_cache(args):
+    """List, clean, or locate the cache."""
+    from physionet.api.utils import format_size
+    from physionet.cache import clean_cache, list_cache
+    from physionet.data import get_cache_dir
+
+    cache_dir = getattr(args, "cache_dir", None)
+    cache = get_cache_dir(cache_dir)
+    command = args.cache_command or "list"
+    if command == "dir":
+        print(cache)
+        return 0
+
+    if command == "list":
+        entries = list_cache(getattr(args, "slug", None), cache_dir=str(cache))
+        if getattr(args, "json", False):
+            print(json.dumps({"cache": str(cache), "versions": [entry.to_dict() for entry in entries]}))
+            return 0
+        if not entries:
+            print(f"Cache: {cache} (empty)" if not getattr(args, "slug", None)
+                  else f"{args.slug} is not in the cache at {cache}.")
+            return 0
+        files = sum(entry.files for entry in entries)
+        size = sum(entry.size for entry in entries)
+        print(f"Cache: {cache} ({len(entries)} dataset version(s), {files} file(s), {format_size(size)})")
+        print()
+        _print_cache_table(entries, format_size)
+        unfinished = sum(entry.unfinished for entry in entries)
+        if unfinished:
+            print(f"\n{unfinished} unfinished download(s). `physionet cache clean` removes those "
+                  "not changed in the last day.")
+        return 0
+
+    if args.version and not args.slug:
+        print("Error: --version needs a dataset, e.g. physionet cache clean mimiciv --version 3.1", file=sys.stderr)
+        return 1
+    options = dict(slug=args.slug, version=args.version, older_than=args.older_than, cache_dir=str(cache))
+    planned = clean_cache(**options, dry_run=True)
+    what = args.slug + (f" {args.version}" if args.version else "") if args.slug else "the cache"
+    age = f" downloaded more than {_describe_age(args.older_than)} ago" if args.older_than else ""
+    if planned.files == 0 and planned.size == 0 and planned.unfinished == 0 and not planned.versions:
+        print(f"Nothing to delete from {what}{age}.")
+        # A dry run only fails to read folders, so these are folders it could not check.
+        return _print_clean_errors(planned.errors, "could not be read")
+    summary = _clean_summary(planned, format_size)
+    if args.dry_run:
+        print(f"Would delete {summary} from {what}{age} in {cache}.")
+        _print_removed_versions(planned.versions, "Would remove")
+        return _print_clean_errors(planned.errors, "could not be read")
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print(f"Would delete {summary} from {what}{age}. Pass --yes to delete without asking.",
+                  file=sys.stderr)
+            return 1
+        try:
+            answer = input(f"Delete {summary} from {what}{age} in {cache}? [y/N] ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 130
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing was deleted.")
+            return 0
+    result = clean_cache(**options)
+    print(f"Deleted {_clean_summary(result, format_size)}.")
+    _print_removed_versions(result.versions, "Removed")
+    return _print_clean_errors(result.errors, "could not be deleted or read")
+
+
+def _print_clean_errors(errors, problem):
+    """Print the paths clean_cache() could not handle; return the exit status."""
+    if not errors:
+        return 0
+    print(f"{len(errors)} path(s) {problem}:", file=sys.stderr)
+    for path, reason in errors[:10]:
+        print(f"  {path}: {reason}", file=sys.stderr)
+    if len(errors) > 10:
+        print(f"  and {len(errors) - 10} more", file=sys.stderr)
+    return 1
+
+
+def _clean_summary(result, format_size):
+    summary = f"{result.files} file(s), {format_size(result.size)}"
+    if result.unfinished:
+        summary += f", and {result.unfinished} unfinished download(s)"
+    return summary
+
+
+def _print_cache_table(entries, format_size):
+    show_origin = any(entry.origin != "physionet.org" for entry in entries)
+    rows = [
+        (
+            *((entry.origin,) if show_origin else ()),
+            entry.slug,
+            entry.version,
+            str(entry.files),
+            format_size(entry.size),
+            entry.last_downloaded.astimezone().strftime("%Y-%m-%d") if entry.last_downloaded else "-",
+            "restricted" if entry.restricted else "",
+        )
+        for entry in entries
+    ]
+    header = (*(("SERVER",) if show_origin else ()), "DATASET", "VERSION", "FILES", "SIZE", "DOWNLOADED", "")
+    widths = [max(len(row[i]) for row in rows + [header]) for i in range(len(header))]
+    numeric = {len(header) - 4, len(header) - 3}  # FILES and SIZE
+    for row in [header] + rows:
+        cells = [cell.rjust(width) if i in numeric else cell.ljust(width)
+                 for i, (cell, width) in enumerate(zip(row, widths))]
+        print("  ".join(cells).rstrip())
+
+
+def _print_removed_versions(versions, verb):
+    for entry in versions:
+        print(f"  {verb} {entry.slug} {entry.version}"
+              + (f" ({entry.origin})" if entry.origin != "physionet.org" else ""))
+
+
+def _describe_age(age):
+    if age.days and age.days % 7 == 0 and age.seconds == 0:
+        return f"{age.days // 7} week(s)"
+    if age.days and age.seconds == 0:
+        return f"{age.days} day(s)"
+    hours = age.total_seconds() / 3600
+    return f"{hours:g} hour(s)"
 
 
 def _handle_validate(args):
