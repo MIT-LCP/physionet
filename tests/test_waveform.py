@@ -171,6 +171,14 @@ def test_load_annotation(project):
     window = load_annotation("demo", "rec", version="1.0", source="physionet", show_progress=False,
                              start="2s", end="7s")
     assert list(window.sample) == [250, 450, 650]
+    assert window.symbol == ["N", "V", "N"]
+    assert window.ann_len == 3
+
+    # Only a start, or only an end
+    after = load_annotation("demo", "rec", version="1.0", source="physionet", show_progress=False, start=4)
+    before = load_annotation("demo", "rec", version="1.0", source="physionet", show_progress=False, end=4)
+    assert (list(after.sample), after.symbol) == ([450, 650, 850], ["V", "N", "N"])
+    assert (list(before.sample), before.symbol) == ([50, 250], ["N", "N"])
 
 
 def test_annotation_without_fs_uses_the_header(project):

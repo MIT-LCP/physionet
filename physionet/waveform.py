@@ -168,7 +168,37 @@ def load_annotation(
         sampto = _to_sample(end, float(fs), "end") if end is not None else None
         if sampto is not None and sampto <= sampfrom:
             raise ValueError("start must be before end")
-        return reader.read(lambda: wfdb.rdann(local_name, extension, sampfrom=sampfrom, sampto=sampto))
+        return _annotations_in_range(annotation, sampfrom, sampto)
+
+
+# Fields of a wfdb.Annotation with one value per annotation.
+_ANNOTATION_FIELDS = ("sample", "symbol", "subtype", "chan", "num", "aux_note", "label_store", "description")
+
+
+def _annotations_in_range(annotation, sampfrom: int, sampto: Optional[int]):
+    """
+    Keep the annotations with sampfrom <= sample < sampto.
+
+    Done here rather than with rdann(sampfrom=, sampto=) or apply_range(),
+    which wfdb 4.x does not apply to every range or annotation file.
+    """
+    import numpy as np
+
+    samples = np.asarray(annotation.sample)
+    keep = samples >= sampfrom
+    if sampto is not None:
+        keep &= samples < sampto
+    indices = np.flatnonzero(keep)
+    for name in _ANNOTATION_FIELDS:
+        values = getattr(annotation, name, None)
+        if values is None or len(values) != len(samples):
+            continue
+        if isinstance(values, np.ndarray):
+            setattr(annotation, name, values[indices])
+        else:
+            setattr(annotation, name, [values[i] for i in indices])
+    annotation.ann_len = len(indices)
+    return annotation
 
 
 class _Reader:
