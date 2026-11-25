@@ -252,9 +252,9 @@ def main():
 
     # Verify subcommand
     verify_parser = subparsers.add_parser(
-        "verify", help="Check a downloaded copy of a dataset against its published checksums"
+        "verify", help="Check local, S3, or PhysioNet files against published checksums"
     )
-    verify_parser.add_argument("path", help="Folder to check, e.g. one made by physionet download")
+    verify_parser.add_argument("path", help="Local folder, s3://bucket/prefix, or physionet://slug/version")
     verify_parser.add_argument(
         "slug", nargs="?", help="Project identifier (default: read from the folder name, e.g. mimiciv-3.1)"
     )
@@ -948,6 +948,8 @@ def _handle_verify(args):
         return 0 if result.passed else 1
 
     print(f"Checking {result.path} against the checksums from {result.source}")
+    if result.files_source:
+        print(f"Reading files from {result.files_source}")
 
     def listing(names):
         for name in names[:VERIFY_MAX_LISTED]:
@@ -988,7 +990,7 @@ def _handle_verify(args):
 
     download_folder = next(
         (path for path in _named_paths(result.path) if path.name == f"{result.slug}-{result.version}"), None
-    )
+    ) if isinstance(result.path, Path) else None
     if repairable and result.slug and download_folder is not None:
         command = (f"physionet download {result.slug} --version {result.version} "
                    f"--output {_quote(str(download_folder.parent))}")

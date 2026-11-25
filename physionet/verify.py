@@ -1,4 +1,4 @@
-"""Check a local copy of a PhysioNet dataset against its published checksums.
+"""Check a local or remote PhysioNet dataset against its published checksums.
 
 The checksums are, in order of preference:
 
@@ -16,11 +16,14 @@ import os
 import re
 import shlex
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import requests
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from physionet.api.exceptions import ForbiddenError, NotFoundError
 from physionet.download import MAX_JOBS, _filter_files, _is_safe_path, _parse_manifest, _progress_bar
@@ -37,8 +40,8 @@ _VERSION = re.compile(r"^\d+(\.\d+)*$")
 class VerifyResult:
     """The outcome of verify()."""
 
-    path: Path
-    """The folder that was checked."""
+    path: Path | str
+    """The local folder or remote URL that was checked."""
     source: str
     """Where the checksums came from."""
     slug: Optional[str] = None
@@ -56,6 +59,8 @@ class VerifyResult:
     outside: List[str] = field(default_factory=list)
     """Files that are symbolic links to somewhere outside the folder, so the
     copy does not hold them. They are not read."""
+    files_source: Optional[str] = None
+    """Where remote file contents were read from, when source selection is automatic."""
 
     @property
     def checked(self) -> int:
@@ -78,6 +83,7 @@ class VerifyResult:
         return {
             "path": str(self.path),
             "source": self.source,
+            "files_source": self.files_source,
             "slug": self.slug,
             "version": self.version,
             "passed": self.passed,
@@ -108,10 +114,10 @@ def verify(
     base_url: str = "https://physionet.org",
 ) -> VerifyResult:
     """
-    Check the files in a folder against a PhysioNet project's checksums.
+    Check local or remote files against a PhysioNet project's checksums.
 
     Args:
-        path: The folder, e.g. one made by `physionet download`
+        path: A local folder, s3://bucket/prefix, or physionet://slug/version
         slug: Project identifier. Read from the folder name if not given.
         version: Project version. Read from the folder name if not given.
         checksums: A checksum file to use instead (lines of "<sha256>  <path>")
@@ -130,7 +136,7 @@ def verify(
         checksum list is present and matches.
 
     Raises:
-        FileNotFoundError: If the folder or checksum file does not exist
+        FileNotFoundError: If the folder, S3 prefix or checksum file does not exist
         ValueError: If no checksums can be found for the folder, or jobs is
             not between 1 and MAX_JOBS
         NotFoundError: If the project or version is not found
@@ -139,6 +145,16 @@ def verify(
     """
     if isinstance(jobs, bool) or not isinstance(jobs, int) or not 1 <= jobs <= MAX_JOBS:
         raise ValueError(f"jobs must be a whole number from 1 to {MAX_JOBS}, not {jobs!r}")
+    if isinstance(path, str) and path.startswith("s3://"):
+        return _verify_s3(
+            path, slug, version, checksums, include, exclude, jobs, show_progress,
+            cache_dir, username, password, token, base_url,
+        )
+    if isinstance(path, str) and path.startswith("physionet://"):
+        return _verify_physionet(
+            path, slug, version, checksums, include, exclude, jobs, show_progress,
+            cache_dir, username, password, token, base_url,
+        )
     folder = Path(path).expanduser()
     if not folder.is_dir():
         raise FileNotFoundError(f"{folder} is not a folder")
@@ -223,6 +239,222 @@ def verify(
                 executor.shutdown(wait=True, cancel_futures=True)
 
     for names in (result.matched, result.mismatched, result.missing, result.outside):
+        names.sort()
+    result.unreadable.sort()
+    return result
+
+
+def _verify_s3(
+    path, slug, version, checksums, include, exclude, jobs, show_progress,
+    cache_dir, username, password, token, base_url,
+) -> VerifyResult:
+    """Stream S3 objects through SHA-256 without saving copies to disk."""
+    import boto3
+    from botocore import UNSIGNED
+    from botocore.config import Config
+    from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
+
+    parsed = urlsplit(path)
+    if not parsed.netloc or parsed.query or parsed.fragment:
+        raise ValueError(f"Invalid S3 folder URL: {path}")
+    bucket = parsed.netloc
+    prefix = parsed.path.strip("/")
+    object_prefix = f"{prefix}/" if prefix else ""
+    s3 = boto3.client("s3")
+
+    try:
+        objects = _s3_objects(s3, bucket, object_prefix)
+    except (NoCredentialsError, ClientError) as signed_error:
+        stale_codes = {"ExpiredToken", "InvalidToken", "InvalidAccessKeyId", "SignatureDoesNotMatch"}
+        if isinstance(signed_error, ClientError) and signed_error.response.get("Error", {}).get("Code") not in stale_codes:
+            raise OSError(f"Could not list {path}: {signed_error}") from signed_error
+        try:
+            # Public buckets can be read even when credentials are absent or stale.
+            s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
+            objects = _s3_objects(s3, bucket, object_prefix)
+        except (BotoCoreError, ClientError) as unsigned_error:
+            error = signed_error if isinstance(signed_error, ClientError) else unsigned_error
+            raise OSError(f"Could not list {path}: {error}") from error
+    except (BotoCoreError, ClientError) as exc:
+        raise OSError(f"Could not list {path}: {exc}") from exc
+    if not objects:
+        raise FileNotFoundError(f"{path} has no files, or the S3 prefix does not exist")
+
+    inferred_project = False
+    if checksums is not None:
+        slug = version = None
+    elif version is not None and slug is None:
+        raise ValueError("version needs slug")
+    elif version is None:
+        from physionet.data import _NAME
+
+        parts = prefix.split("/")
+        guessed_slug, guessed_version = (parts[-2], parts[-1]) if len(parts) >= 2 else (None, None)
+        if not guessed_slug or not _NAME.fullmatch(guessed_slug) or not _VERSION.fullmatch(guessed_version):
+            guessed_slug = guessed_version = None
+        if slug is None or slug == guessed_slug:
+            inferred_project = slug is None and guessed_slug is not None
+            slug, version = guessed_slug, guessed_version
+        else:
+            raise ValueError(f"Give the version of {slug} that {path} holds")
+
+    if checksums is not None or (slug is not None and version is not None):
+        try:
+            entries, source = _checksums(
+                Path("."), slug, version, checksums, cache_dir, username, password, token, base_url
+            )
+        except NotFoundError as exc:
+            if not inferred_project:
+                raise
+            command = f"physionet verify {shlex.quote(path)} SLUG --version {version}"
+            raise NotFoundError(
+                f"{exc}. The project and version were inferred from the S3 path. "
+                f"If they differ from the PhysioNet project, pass the actual slug explicitly: `{command}`."
+            ) from exc
+    elif CHECKSUM_FILE in objects:
+        try:
+            with closing(s3.get_object(Bucket=bucket, Key=object_prefix + CHECKSUM_FILE)["Body"]) as body:
+                entries = _parse_manifest(body.read().decode("utf-8"))
+        except (BotoCoreError, ClientError) as exc:
+            raise OSError(f"Could not read {path}/{CHECKSUM_FILE}: {exc}") from exc
+        source = f"{path.rstrip('/')}/{CHECKSUM_FILE} (in the folder)"
+    else:
+        raise ValueError(
+            f"Cannot tell which dataset {path} holds. Give the dataset and version "
+            "(e.g. physionet verify S3_URL mimiciv --version 3.1), or a checksum file."
+        )
+
+    expected = {
+        name: checksum.lower() for name, checksum in _filter_files(entries, include, exclude) if _is_safe_path(name)
+    }
+    result = VerifyResult(path=path, source=source, slug=slug, version=version)
+    present = [(name, objects[name]) for name in expected if name in objects]
+    result.missing = sorted(name for name in expected if name not in objects)
+    extra = [(name, "") for name in objects if name != CHECKSUM_FILE]
+    result.extra = sorted(name for name, _ in _filter_files(extra, include, exclude) if name not in expected)
+
+    with _progress_bar(
+        total=sum(size for _, size in present), unit="B", unit_scale=True,
+        desc="Verifying", leave=False, show_progress=show_progress,
+    ) as progress:
+        def check(item):
+            name, _ = item
+            try:
+                with closing(s3.get_object(Bucket=bucket, Key=object_prefix + name)["Body"]) as body:
+                    return name, _sha256_body(body, progress.update), None
+            except (BotoCoreError, ClientError, OSError) as exc:
+                return name, None, str(exc)
+
+        if jobs == 1:
+            outcomes = map(check, present)
+        else:
+            executor = ThreadPoolExecutor(max_workers=jobs)
+            outcomes = executor.map(check, present)
+        try:
+            for name, digest, error in outcomes:
+                if error is not None:
+                    result.unreadable.append((name, error))
+                elif digest == expected[name]:
+                    result.matched.append(name)
+                else:
+                    result.mismatched.append(name)
+        finally:
+            if jobs != 1:
+                executor.shutdown(wait=True, cancel_futures=True)
+
+    for names in (result.matched, result.mismatched):
+        names.sort()
+    result.unreadable.sort()
+    return result
+
+
+def _s3_objects(s3, bucket: str, prefix: str) -> Dict[str, int]:
+    """List every object under a prefix, omitting S3 folder markers."""
+    objects = {}
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for item in page.get("Contents", []):
+            key = item["Key"]
+            if key != prefix and not key.endswith("/"):
+                objects[key[len(prefix):]] = item["Size"]
+    return objects
+
+
+def _verify_physionet(
+    path, slug, version, checksums, include, exclude, jobs, show_progress,
+    cache_dir, username, password, token, base_url,
+) -> VerifyResult:
+    """Read published files remotely and hash their original response bytes."""
+    from physionet.data import _Remote, _check_name, latest_version
+    from physionet.download import S3_BASE_URL, _configure_retry_adapter, _select_source
+
+    parsed = urlsplit(path)
+    parts = parsed.path.strip("/").split("/")
+    if not parsed.netloc or len(parts) != 1 or not parts[0] or parsed.query or parsed.fragment:
+        raise ValueError("Use physionet://SLUG/VERSION to verify a published dataset")
+    url_slug, url_version = parsed.netloc, parts[0]
+    _check_name(url_slug, "project")
+    if url_version == "latest":
+        url_version = latest_version(
+            url_slug, username=username, password=password, token=token, base_url=base_url
+        )
+    else:
+        _check_name(url_version, "version")
+    if slug is not None and slug != url_slug:
+        raise ValueError(f"Project {slug} does not match the physionet:// URL ({url_slug})")
+    if version is not None and version != url_version:
+        raise ValueError(f"Version {version} does not match the physionet:// URL ({url_version})")
+    slug, version = url_slug, url_version
+    entries, source = _checksums(
+        Path("."), slug, version, checksums, cache_dir, username, password, token, base_url
+    )
+    expected = {
+        name: checksum.lower() for name, checksum in _filter_files(entries, include, exclude) if _is_safe_path(name)
+    }
+    result = VerifyResult(path=path, source=source, slug=slug, version=version)
+
+    with _Remote(base_url.rstrip("/"), username, password, token) as remote:
+        client = remote.client
+        source_type, source_base = _select_source(client, slug, version, "auto", remote.username, verbose=False)
+        if source_type == "s3":
+            source_base = f"{S3_BASE_URL}/{slug}/{version}"
+        result.files_source = source_base
+        _configure_retry_adapter(client.session, f"{source_base}/", 3, adapter_prefix=source_base)
+
+        with _progress_bar(
+            unit="B", unit_scale=True, desc="Verifying",
+            leave=False, show_progress=show_progress,
+        ) as progress:
+            def check(item):
+                name, checksum = item
+                url = f"{source_base}/{name}"
+                try:
+                    with client.session.get(
+                        url, stream=True, headers={"Accept-Encoding": "identity"}, timeout=client.timeout
+                    ) as response:
+                        if response.status_code == 404:
+                            return name, "missing", None
+                        response.raise_for_status()
+                        digest = _sha256_body(response.raw, progress.update)
+                        return name, "matched" if digest == checksum else "mismatched", None
+                except (requests.RequestException, Urllib3HTTPError, OSError) as exc:
+                    return name, "unreadable", str(exc)
+
+            if jobs == 1:
+                outcomes = map(check, expected.items())
+            else:
+                executor = ThreadPoolExecutor(max_workers=jobs)
+                outcomes = executor.map(check, expected.items())
+            try:
+                for name, status, error in outcomes:
+                    if error is not None:
+                        result.unreadable.append((name, error))
+                    else:
+                        getattr(result, status).append(name)
+            finally:
+                if jobs != 1:
+                    executor.shutdown(wait=True, cancel_futures=True)
+
+    for names in (result.matched, result.mismatched, result.missing):
         names.sort()
     result.unreadable.sort()
     return result
@@ -338,9 +570,13 @@ def _local_files(folder: Path) -> List[str]:
 
 
 def _sha256(file: Path, advance) -> str:
-    digest = hashlib.sha256()
     with open(file, "rb") as handle:
-        for chunk in iter(lambda: handle.read(_CHUNK), b""):
-            digest.update(chunk)
-            advance(len(chunk))
+        return _sha256_body(handle, advance)
+
+
+def _sha256_body(handle, advance) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(_CHUNK), b""):
+        digest.update(chunk)
+        advance(len(chunk))
     return digest.hexdigest()
