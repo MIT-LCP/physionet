@@ -260,6 +260,14 @@ def test_a_cache_folder_that_cannot_be_listed_can_be_read(project, tmp_path):
             folder.chmod(0o755)
 
 
+def test_an_unused_damaged_segment_header_does_not_affect_a_read(project, tmp_path):
+    read("p00/p001/p001", start=12, end=13)
+    later = tmp_path / "cache" / "physionet.org" / "demo" / "1.0" / "p00" / "p001" / "p001_2.hea"
+    later.write_text("not a WFDB header\n")
+
+    assert read("p00/p001/p001", start=12, end=13).p_signal.shape == (100, 3)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="symbolic links need extra rights on Windows")
 def test_a_linked_segment_file_is_refused(project, tmp_path):
     read("p00/p001/p001", start=12, end=13)

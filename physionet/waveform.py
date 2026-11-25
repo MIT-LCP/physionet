@@ -105,7 +105,7 @@ def load_record(
             raise ValueError("start must be before end")
 
         return reader.read(
-            check=lambda: _refuse_linked_files(wfdb, reader.cache, local_name),
+            check=lambda: _refuse_linked_files(wfdb, reader.cache, local_name, sampfrom, sampto),
             read=lambda: wfdb.rdrecord(
                 local_name,
                 sampfrom=sampfrom,
@@ -303,7 +303,7 @@ class _Reader:
         return PurePosixPath(*Path(os.path.relpath(wanted, root)).parts).as_posix()
 
 
-def _refuse_linked_files(wfdb, cache: Path, local_name: str) -> None:
+def _refuse_linked_files(wfdb, cache: Path, local_name: str, sampfrom: int, sampto: Optional[int]) -> None:
     """
     Refuse symbolic links among the cached files a record's headers name, as
     fetch() does for each file it returns.
@@ -313,17 +313,28 @@ def _refuse_linked_files(wfdb, cache: Path, local_name: str) -> None:
     checked on its own, so this needs no permission to list folders. The
     headers themselves come through fetch(), except cached segment headers,
     which are checked before they are read.
+
+    Of a multi-segment record, only the segments that overlap sampfrom to
+    sampto are read, as wfdb reads only those, so a damaged header of another
+    segment does not affect the read. Every segment header path is still
+    checked for links, since wfdb may open one outside the range (for signal
+    names), without reading it here.
     """
     folder = Path(local_name).parent
     header = wfdb.rdheader(local_name)
     paths = []
     if isinstance(header, wfdb.MultiRecord):
-        for segment in header.seg_name or []:
+        end = sampto if sampto is not None else header.sig_len
+        segment_start = 0
+        for segment, length in zip(header.seg_name or [], header.seg_len or []):
+            segment_end = segment_start + length
+            needed = segment_start < end and segment_end > sampfrom if end is not None else segment_end > sampfrom
+            segment_start = segment_end
             if segment == "~":  # a gap, with no files
                 continue
             segment_header = folder / f"{segment}.hea"
             _refuse_symlinks(cache, segment_header)
-            if segment_header.is_file():
+            if needed and segment_header.is_file():
                 paths += [folder / name for name in wfdb.rdheader(str(folder / segment)).file_name or []]
     else:
         paths = [folder / name for name in header.file_name or []]
