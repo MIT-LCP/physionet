@@ -337,6 +337,50 @@ Symbolic links are removed, never followed. Unfinished downloads are kept for a
 day, in case another program is still writing them. `physionet download` saves
 files to the folder you choose, not the cache, so they are not listed here.
 
+### `physionet verify`
+
+Check that a downloaded copy of a dataset is complete and undamaged, for
+example after copying it to a cluster or downloading it with `wget`:
+
+```bash
+physionet verify ./mimic-iv-demo-2.2                  # dataset and version read from the folder name
+physionet verify ./physionet.org/files/mitdb/1.0.0    # a wget copy
+physionet verify ./data mimiciv --version 3.1         # any folder
+physionet verify ./data --checksums SHA256SUMS.txt    # against a checksum file
+physionet verify ./mimiciv-3.1 --include "hosp/*" -j 4
+```
+
+```
+Checking /data/mimic-iv-demo-2.2 against the checksums from https://physionet.org (mimic-iv-demo 2.2)
+✓ 29 of 31 file(s) match
+✗ 1 file(s) do not match (corrupt, changed or incomplete):
+    hosp/labevents.csv.gz
+✗ 1 file(s) are missing:
+    icu/chartevents.csv.gz
+
+To download missing and damaged files again:
+  physionet download mimic-iv-demo --version 2.2 --output /data
+```
+
+Every file is compared with the project's published SHA-256 checksums. A
+checksum list cached by `physionet.load()` or `fetch()` is used if there is one,
+so this also works offline; otherwise it is downloaded (restricted datasets use
+your sign-in, as for downloads). Without a dataset and version, a
+`SHA256SUMS.txt` in the folder is used. That only shows the files match that
+list, not that the list itself is PhysioNet's.
+
+Files that are not in the checksum list are listed but do not count as
+problems. A file that is a symbolic link to somewhere outside the folder counts
+as a problem, since the copy does not hold it. It exits with status 1 if a file
+is missing, damaged, unreadable or linked from outside, or if no files were
+checked (an empty checksum list, or `--include` matching nothing); `--json`
+lists every file. In Python:
+
+```python
+result = physionet.verify("mimic-iv-demo-2.2")
+result.passed, result.mismatched, result.missing, result.extra
+```
+
 ### `physionet validate`
 
 Validate a dataset before submission to PhysioNet. The validator checks for
