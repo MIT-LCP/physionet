@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import requests
 import requests_mock as rm
 
 wfdb = pytest.importorskip("wfdb")
@@ -227,6 +228,49 @@ def test_a_linked_file_in_the_cache_is_refused(project, tmp_path):
     # As fetch() does for the same file
     with pytest.raises(ValueError, match="symbolic links are not allowed in the cache"):
         physionet.fetch("demo", "rec.dat", "1.0", source="physionet", show_progress=False)
+
+
+def test_cached_annotation_is_read_offline_without_its_header(project, tmp_path):
+    physionet.fetch("demo", "rec.qrs", "1.0", source="physionet", show_progress=False)
+
+    with rm.Mocker() as offline:
+        offline.get(rm.ANY, exc=requests.ConnectionError)
+        annotation = load_annotation("demo", "rec", "qrs", "1.0", source="physionet", show_progress=False)
+        assert list(annotation.sample) == [60, 260]
+        assert annotation.fs is None
+        # A time range needs the header's sampling frequency
+        with pytest.raises(ConnectionError):
+            load_annotation("demo", "rec", "qrs", "1.0", source="physionet", show_progress=False, start=1)
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
+def test_a_cache_folder_that_cannot_be_listed_can_be_read(project, tmp_path):
+    read("rec", end=1)
+    read("p00/p001/p001", start=12, end=13)
+    folders = [tmp_path / "cache" / "physionet.org" / "demo" / "1.0", tmp_path / "cache" / "physionet.org" / "demo" /
+               "1.0" / "p00" / "p001"]
+    for folder in folders:
+        folder.chmod(0o111)  # search only: files can be opened by name, not listed
+    try:
+        assert physionet.fetch("demo", "rec.dat", "1.0", source="physionet", show_progress=False).is_file()
+        assert read("rec", end=1).p_signal.shape == (100, 3)
+        assert read("p00/p001/p001", start=12, end=13).p_signal.shape == (100, 3)
+    finally:
+        for folder in folders:
+            folder.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symbolic links need extra rights on Windows")
+def test_a_linked_segment_file_is_refused(project, tmp_path):
+    read("p00/p001/p001", start=12, end=13)
+    cached = tmp_path / "cache" / "physionet.org" / "demo" / "1.0" / "p00" / "p001" / "p001_1.dat"
+    outside = tmp_path / "outside.dat"
+    outside.write_bytes(cached.read_bytes())
+    cached.unlink()
+    cached.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symbolic links are not allowed in the cache"):
+        read("p00/p001/p001", start=12, end=13)
 
 
 def test_annotation_extension_is_checked(project):

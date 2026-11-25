@@ -105,7 +105,8 @@ def load_record(
             raise ValueError("start must be before end")
 
         return reader.read(
-            lambda: wfdb.rdrecord(
+            check=lambda: _refuse_linked_files(wfdb, reader.cache, local_name),
+            read=lambda: wfdb.rdrecord(
                 local_name,
                 sampfrom=sampfrom,
                 sampto=sampto,
@@ -168,7 +169,8 @@ def load_annotation(
         # Not every annotation file gives its sampling frequency; the record's
         # header does, if the project has one.
         if not annotation.fs:
-            annotation.fs = _header_fs(wfdb, reader, record, local_name)
+            required = start is not None or end is not None
+            annotation.fs = _header_fs(wfdb, reader, record, local_name, required)
         if start is None and end is None:
             return annotation
 
@@ -185,11 +187,19 @@ def load_annotation(
         return _annotations_in_range(annotation, sampfrom, sampto)
 
 
-def _header_fs(wfdb, reader, record: str, local_name: str):
-    """The sampling frequency in a record's header, or None if the project has no header for it."""
+def _header_fs(wfdb, reader, record: str, local_name: str, required: bool):
+    """
+    The sampling frequency in a record's header. If it is not required, None
+    when the project has no header for the record or it cannot be downloaded
+    (e.g. offline), so the annotations can still be read.
+    """
     try:
         reader.fetch(f"{record}.hea")
     except FileNotFoundError:
+        return None
+    except ConnectionError:
+        if required:
+            raise
         return None
     return reader.read(lambda: wfdb.rdheader(local_name)).fs
 
@@ -241,7 +251,6 @@ class _Reader:
         self.cache = get_cache_dir(cache_dir)
         self.root: Optional[Path] = None
         self.fetched = set()
-        self.folders = set()  # folders of the files fetched, which wfdb reads from
 
     def fetch(self, name: str) -> Path:
         """Return the cached path of a file in the project, downloading it if needed."""
@@ -260,16 +269,16 @@ class _Reader:
         if self.root is None:
             self.root = path.parents[len(PurePosixPath(name).parts) - 1]
         self.fetched.add(name)
-        self.folders.add(path.parent)
         return path
 
-    def read(self, read):
+    def read(self, read, check=None):
         """
         Call read(); each time wfdb cannot find a file of the project, fetch
-        it and try again.
+        it and try again. check(), if given, is called before each attempt.
         """
         while True:
-            self._refuse_links()
+            if check is not None:
+                check()
             try:
                 return read()
             except FileNotFoundError as exc:
@@ -283,19 +292,6 @@ class _Reader:
                         f"The record needs {name}, which is not a file in {self.slug} {self.version}"
                     ) from missing
 
-    def _refuse_links(self) -> None:
-        """
-        Refuse symbolic links where wfdb reads, as fetch() does.
-
-        wfdb opens files that are already in the cache itself, without
-        fetch(), so a link there could point it at a file outside the cache.
-        """
-        for folder in self.folders:
-            _refuse_symlinks(self.cache, folder)
-            for entry in os.scandir(folder):
-                if entry.is_symlink():
-                    raise ValueError(f"Refusing to use {entry.path}: symbolic links are not allowed in the cache")
-
     def _project_path(self, filename) -> Optional[str]:
         """The path within the project of a file wfdb could not open, if it is inside the project."""
         if not filename or self.root is None:
@@ -305,6 +301,34 @@ class _Reader:
         if os.path.commonpath([root, wanted]) != root or wanted == root:
             return None
         return PurePosixPath(*Path(os.path.relpath(wanted, root)).parts).as_posix()
+
+
+def _refuse_linked_files(wfdb, cache: Path, local_name: str) -> None:
+    """
+    Refuse symbolic links among the cached files a record's headers name, as
+    fetch() does for each file it returns.
+
+    wfdb opens files that are already in the cache itself, without fetch(),
+    so a link there could point it at a file outside the cache. Each path is
+    checked on its own, so this needs no permission to list folders. The
+    headers themselves come through fetch(), except cached segment headers,
+    which are checked before they are read.
+    """
+    folder = Path(local_name).parent
+    header = wfdb.rdheader(local_name)
+    paths = []
+    if isinstance(header, wfdb.MultiRecord):
+        for segment in header.seg_name or []:
+            if segment == "~":  # a gap, with no files
+                continue
+            segment_header = folder / f"{segment}.hea"
+            _refuse_symlinks(cache, segment_header)
+            if segment_header.is_file():
+                paths += [folder / name for name in wfdb.rdheader(str(folder / segment)).file_name or []]
+    else:
+        paths = [folder / name for name in header.file_name or []]
+    for path in paths:
+        _refuse_symlinks(cache, path)
 
 
 def _import_wfdb():
