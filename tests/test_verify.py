@@ -592,8 +592,11 @@ def test_physionet_url_cli_can_check_a_subset(capsys):
 
 
 def test_physionet_url_reports_when_files_come_from_the_mirror(capsys):
+    import importlib
+
     mirror = "https://physionet-open.s3.amazonaws.com/demo/1.0"
-    with patch("physionet.download._select_source", return_value=("http", mirror)), rm.Mocker() as mocker:
+    download_module = importlib.import_module("physionet.download")
+    with patch.object(download_module, "_select_source", return_value=("http", mirror)), rm.Mocker() as mocker:
         mock_checksums(mocker)
         mocker.get(f"{mirror}/100.hea", content=FILES["100.hea"])
         assert run_cli("verify", "physionet://demo/1.0", "--include", "*.hea", "--json") == 0
