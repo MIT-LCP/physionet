@@ -303,6 +303,40 @@ for scripts. Reports never include passwords or tokens, only where credentials
 come from and the account name, so you can paste one into a bug report. In
 Python, `physionet.doctor.run_checks()` returns the checks.
 
+### `physionet cache`
+
+`physionet.load()`, `fetch()` and `physionet://` paths keep the files they
+download in a cache (see [Load a table](#load-a-table)). List what is in it, and
+delete files you no longer need:
+
+```bash
+physionet cache                               # list the dataset versions in the cache
+physionet cache list mimiciv --json           # one dataset, as JSON
+physionet cache clean mimiciv --version 3.1   # delete one version
+physionet cache clean --older-than 90d        # files downloaded more than 90 days ago (or 2w, 12h)
+physionet cache clean --dry-run               # show what would be deleted
+physionet cache dir                           # print the cache folder
+```
+
+```
+Cache: /home/me/.cache/physionet (2 dataset version(s), 34 file(s), 1.21 GB)
+
+DATASET        VERSION  FILES     SIZE  DOWNLOADED
+mimic-iv-demo  2.2         31  15.20 MB  2026-11-20
+mimiciv        3.1          3   1.19 GB  2026-10-02  restricted
+```
+
+`clean` asks before deleting; pass `--yes` in scripts. Deleted files are
+downloaded again the next time they are used. A version whose files are all
+deleted is removed with its cached checksum list. `--cache-dir` picks a cache
+other than the default (`PHYSIONET_CACHE`, or `~/.cache/physionet`).
+
+Only folders the package created, with a cached checksum list, are touched, so a
+cache folder set to the wrong place does not lead to other files being deleted.
+Symbolic links are removed, never followed. Unfinished downloads are kept for a
+day, in case another program is still writing them. `physionet download` saves
+files to the folder you choose, not the cache, so they are not listed here.
+
 ### `physionet validate`
 
 Validate a dataset before submission to PhysioNet. The validator checks for
@@ -435,7 +469,14 @@ patients = physionet.load("mimic-iv-demo", "hosp/patients", version=version)
 Set `PHYSIONET_CACHE` (or pass `cache_dir=`) to use another folder; if neither
 is set, `$XDG_CACHE_HOME/physionet` is used when `XDG_CACHE_HOME` is set.
 Files from a different `base_url` are kept in a folder named after that
-server. Delete the cache folder to clear it.
+server. See what is in it, and free space, with `physionet cache` (see
+[below](#physionet-cache)) or in Python:
+
+```python
+physionet.list_cache()                     # one entry per dataset version
+physionet.clean_cache("mimiciv", "3.1")    # delete one version
+physionet.clean_cache(older_than=90)       # files downloaded over 90 days ago
+```
 
 - Files are only added after their SHA-256 checksum matches the dataset's
   `SHA256SUMS.txt`. Cached files are not checked again unless you pass
