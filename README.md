@@ -339,8 +339,8 @@ files to the folder you choose, not the cache, so they are not listed here.
 
 ### `physionet verify`
 
-Check that a downloaded copy of a dataset is complete and undamaged, for
-example after copying it to a cluster or downloading it with `wget`:
+Check that a local or S3 copy of a dataset is complete and undamaged, or check
+files served by PhysioNet, without first downloading the dataset:
 
 ```bash
 physionet verify ./mimic-iv-demo-2.2                  # dataset and version read from the folder name
@@ -348,6 +348,9 @@ physionet verify ./physionet.org/files/mitdb/1.0.0    # a wget copy
 physionet verify ./data mimiciv --version 3.1         # any folder
 physionet verify ./data --checksums SHA256SUMS.txt    # against a checksum file
 physionet verify ./mimiciv-3.1 --include "hosp/*" -j 4
+physionet verify s3://my-bucket/mitdb/1.0.0
+physionet verify s3://my-bucket/datasets/my-copy mitdb --version 1.0.0
+physionet verify physionet://mitdb/1.0.0 --include "*.hea"
 ```
 
 ```
@@ -368,6 +371,21 @@ so this also works offline; otherwise it is downloaded (restricted datasets use
 your sign-in, as for downloads). Without a dataset and version, a
 `SHA256SUMS.txt` in the folder is used. That only shows the files match that
 list, not that the list itself is PhysioNet's.
+
+For S3, the package uses the standard AWS credential chain and streams each
+object while calculating its SHA-256 hash. Public buckets can be read without
+AWS credentials. It does not save a local copy, but
+verification reads all of the data and may incur S3 request and transfer charges.
+The S3 path must name a prefix containing the dataset's files; a path ending in
+`<slug>/<version>` supplies the project and version automatically. Otherwise,
+pass them explicitly or provide `--checksums`.
+
+For `physionet://<slug>/<version>`, verification reads the published files
+through the same source selection and sign-in as other PhysioNet commands. It
+does not keep a copy of the files. A remote check can find missing or damaged
+published files, but cannot list extra files that are absent from the published
+checksum list. It still reads every checked file in full; use `--include` to
+check a subset.
 
 Files that are not in the checksum list are listed but do not count as
 problems. A file that is a symbolic link to somewhere outside the folder counts

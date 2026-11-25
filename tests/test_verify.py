@@ -1,13 +1,16 @@
 """Tests for checking a local copy of a dataset against its checksums."""
 
 import hashlib
+import io
 import json
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 import requests_mock as rm
+from botocore import UNSIGNED
+from botocore.exceptions import ClientError, NoCredentialsError
 
 import physionet
 from physionet.api.exceptions import ForbiddenError, NotFoundError
@@ -452,3 +455,127 @@ def test_cli_errors(tmp_path, capsys):
         mock_checksums(mocker, status_code=403)
         assert run_cli("verify", str(tmp_path / "copy"), "demo", "--version", "1.0") == 1
     assert capsys.readouterr().err.startswith("Access denied:")
+
+
+def s3_copy(files, prefix="demo/1.0/"):
+    """An S3 client that lists and streams a small dataset over two pages."""
+    s3 = MagicMock()
+    items = [{"Key": prefix + name, "Size": len(content)} for name, content in files.items()]
+    s3.get_paginator.return_value.paginate.return_value = [
+        {"Contents": items[:2]}, {"Contents": items[2:]}
+    ]
+    s3.get_object.side_effect = lambda Bucket, Key: {"Body": io.BytesIO(files[Key[len(prefix):]])}
+    return s3
+
+
+def test_s3_prefix_streams_files_and_reports_problems():
+    files = {**FILES, "100.hea": b"changed", "notes.txt": b"extra"}
+    del files["RECORDS"]
+    s3 = s3_copy(files)
+    with patch("boto3.client", return_value=s3), rm.Mocker() as mocker:
+        mock_checksums(mocker)
+        result = verify("s3://bucket/demo/1.0", show_progress=False, jobs=2)
+
+    assert result.path == "s3://bucket/demo/1.0"
+    assert (result.slug, result.version) == ("demo", "1.0")
+    assert result.matched == ["sub/100.dat"]
+    assert result.mismatched == ["100.hea"]
+    assert result.missing == ["RECORDS"]
+    assert result.extra == ["notes.txt"]
+    assert not result.passed
+    s3.get_paginator.return_value.paginate.assert_called_once_with(Bucket="bucket", Prefix="demo/1.0/")
+    assert {call.kwargs["Key"] for call in s3.get_object.call_args_list} == {
+        "demo/1.0/100.hea", "demo/1.0/sub/100.dat"
+    }
+
+
+def test_s3_prefix_can_use_its_checksum_file_and_cli_json(capsys):
+    files = {**FILES, "SHA256SUMS.txt": manifest().encode()}
+    s3 = s3_copy(files, prefix="copy/")
+    with patch("boto3.client", return_value=s3):
+        assert run_cli("verify", "s3://bucket/copy", "--json") == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["passed"] is True
+    assert result["path"] == "s3://bucket/copy"
+    assert result["source"] == "s3://bucket/copy/SHA256SUMS.txt (in the folder)"
+    assert result["extra"] == []
+
+
+def test_s3_prefix_with_explicit_project_and_local_checksums(tmp_path):
+    s3 = s3_copy(FILES, prefix="custom/")
+    with patch("boto3.client", return_value=s3), rm.Mocker() as mocker:
+        mock_checksums(mocker)
+        assert verify("s3://bucket/custom", "demo", "1.0", show_progress=False).passed
+
+    sums = tmp_path / "sums.txt"
+    sums.write_text(manifest())
+    with patch("boto3.client", return_value=s3):
+        result = verify("s3://bucket/custom", checksums=str(sums), show_progress=False)
+    assert result.passed
+    assert (result.slug, result.version) == (None, None)
+
+
+def test_s3_public_bucket_can_be_read_without_aws_credentials(tmp_path):
+    signed = s3_copy(FILES)
+    signed.get_paginator.return_value.paginate.side_effect = NoCredentialsError()
+    unsigned = s3_copy(FILES)
+    sums = tmp_path / "sums.txt"
+    sums.write_text(manifest())
+
+    with patch("boto3.client", side_effect=[signed, unsigned]) as client:
+        assert verify("s3://bucket/demo/1.0", checksums=str(sums), show_progress=False).passed
+
+    assert client.call_count == 2
+    assert client.call_args_list[0].args == ("s3",)
+    assert client.call_args_list[1].kwargs["config"].signature_version is UNSIGNED
+
+
+def test_s3_errors_are_reported_cleanly(capsys):
+    s3 = s3_copy(FILES, prefix="copy/")
+    s3.get_paginator.return_value.paginate.return_value = [{"Contents": []}]
+    with patch("boto3.client", return_value=s3):
+        assert run_cli("verify", "s3://bucket/copy", "demo", "--version", "1.0") == 1
+    assert "S3 prefix does not exist" in capsys.readouterr().err
+
+    s3.get_paginator.return_value.paginate.side_effect = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}, "ListObjectsV2"
+    )
+    with patch("boto3.client", return_value=s3):
+        assert run_cli("verify", "s3://bucket/copy", "demo", "--version", "1.0") == 1
+    assert "Could not list s3://bucket/copy" in capsys.readouterr().err
+
+
+def test_physionet_url_checks_remote_files_without_caching(tmp_path):
+    site = "https://example.org"
+    with rm.Mocker() as mocker:
+        mocker.get(f"{site}/files/demo/1.0/SHA256SUMS.txt", text=manifest())
+        mocker.get(f"{site}/files/demo/1.0/100.hea", content=b"changed")
+        mocker.get(f"{site}/files/demo/1.0/RECORDS", status_code=404)
+        mocker.get(f"{site}/files/demo/1.0/sub/100.dat", content=FILES["sub/100.dat"])
+        result = verify("physionet://demo/1.0", base_url=site, show_progress=False, jobs=2)
+
+    assert result.matched == ["sub/100.dat"]
+    assert result.mismatched == ["100.hea"]
+    assert result.missing == ["RECORDS"]
+    assert result.extra == []
+    assert not result.passed
+    assert not (tmp_path / "cache").exists()
+
+
+def test_physionet_url_cli_can_check_a_subset(capsys):
+    site = "https://example.org"
+    with rm.Mocker() as mocker:
+        mocker.get(f"{site}/files/demo/1.0/SHA256SUMS.txt", text=manifest())
+        mocker.get(f"{site}/files/demo/1.0/100.hea", content=FILES["100.hea"])
+        assert run_cli("verify", "physionet://demo/1.0", "--include", "*.hea", "--base-url", site) == 0
+
+    out = capsys.readouterr().out
+    assert "Checking physionet://demo/1.0" in out
+    assert "✓ 1 of 1 file(s) match" in out
+    assert "To download" not in out
+
+
+def test_physionet_url_requires_a_dataset_version():
+    with pytest.raises(ValueError, match="physionet://SLUG/VERSION"):
+        verify("physionet://demo", show_progress=False)
