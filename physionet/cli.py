@@ -280,43 +280,43 @@ def main():
         help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
     )
 
-    # Validate subcommand
-    validate_parser = subparsers.add_parser(
-        "validate",
-        help="Validate a dataset before submission to PhysioNet",
+    # Submission checks; validate remains an alias for existing scripts.
+    preflight_parser = subparsers.add_parser(
+        "preflight", aliases=["validate"],
+        help="Check a dataset before submission to PhysioNet (validate is deprecated)",
     )
-    validate_parser.add_argument(
+    preflight_parser.add_argument(
         "path",
-        help="Path to the dataset directory to validate",
+        help="Path to the dataset directory to check",
     )
-    validate_parser.add_argument(
+    preflight_parser.add_argument(
         "--report",
         metavar="FILE",
         help="Generate detailed JSON report and save to FILE",
     )
-    validate_parser.add_argument(
+    preflight_parser.add_argument(
         "--checks",
         metavar="CATEGORIES",
         help="Comma-separated list of check categories to run (filesystem,documentation,integrity,quality,privacy)",
     )
-    validate_parser.add_argument(
+    preflight_parser.add_argument(
         "--level",
         choices=["error", "warning", "info"],
         default="info",
         help="Minimum severity level to display (default: info)",
     )
-    validate_parser.add_argument(
+    preflight_parser.add_argument(
         "--no-sampling",
         action="store_true",
         help="Disable sampling for large files (scan all rows, slower but more thorough)",
     )
-    validate_parser.add_argument(
+    preflight_parser.add_argument(
         "--max-rows",
         type=int,
         metavar="N",
         help="Maximum rows to scan per CSV file (default: 10000)",
     )
-    validate_parser.add_argument(
+    preflight_parser.add_argument(
         "--no-duplicate-check",
         action="store_true",
         help="Skip hashing same-size files to check for duplicate content",
@@ -340,8 +340,10 @@ def main():
         return _handle_cache(args)
     elif args.command == "verify":
         return _handle_verify(args)
-    elif args.command == "validate":
-        return _handle_validate(args)
+    elif args.command in ("preflight", "validate"):
+        if args.command == "validate":
+            print("Warning: 'physionet validate' is deprecated; use 'physionet preflight'.", file=sys.stderr)
+        return _handle_preflight(args)
     elif args.command is None:
         parser.print_help()
         return 0
@@ -1006,8 +1008,8 @@ def _quote(text):
     return shlex.quote(text)
 
 
-def _handle_validate(args):
-    """Handle the validate subcommand."""
+def _handle_preflight(args):
+    """Check a dataset before submission."""
     # Validate path
     dataset_path = Path(args.path)
     if not dataset_path.exists():

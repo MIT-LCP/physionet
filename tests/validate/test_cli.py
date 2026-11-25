@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 
-class TestValidateCLI:
-    """Tests for the validate CLI command."""
+class TestPreflightCLI:
+    """Tests for the preflight CLI command and validate alias."""
 
     def test_cli_validates_directory(self, tmp_path):
         """Test that CLI can validate a directory."""
@@ -34,6 +34,20 @@ Test references.
 
         # Run CLI
         result = subprocess.run(
+            [sys.executable, "-m", "physionet", "preflight", str(tmp_path)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+        assert "PhysioNet Dataset Validation Report" in result.stdout
+        assert (tmp_path / "PHYSIONET_REPORT.md").exists()
+        assert "deprecated" not in result.stderr
+
+    def test_validate_alias_runs_preflight_with_deprecation_notice(self, tmp_path):
+        (tmp_path / "README.md").write_text("# Test dataset\n")
+
+        result = subprocess.run(
             [sys.executable, "-m", "physionet", "validate", str(tmp_path)],
             capture_output=True,
             text=True,
@@ -41,11 +55,13 @@ Test references.
 
         assert result.returncode == 0
         assert "PhysioNet Dataset Validation Report" in result.stdout
+        assert (tmp_path / "PHYSIONET_REPORT.md").exists()
+        assert "deprecated; use 'physionet preflight'" in result.stderr
 
     def test_cli_handles_nonexistent_path(self):
         """Test that CLI handles nonexistent paths gracefully."""
         result = subprocess.run(
-            [sys.executable, "-m", "physionet", "validate", "/nonexistent/path"],
+            [sys.executable, "-m", "physionet", "preflight", "/nonexistent/path"],
             capture_output=True,
             text=True,
         )
@@ -62,7 +78,7 @@ Test references.
         # Run CLI with --report
         report_file = tmp_path / "report.json"
         result = subprocess.run(
-            [sys.executable, "-m", "physionet", "validate", str(tmp_path), "--report", str(report_file)],
+            [sys.executable, "-m", "physionet", "preflight", str(tmp_path), "--report", str(report_file)],
             capture_output=True,
             text=True,
         )
@@ -85,7 +101,7 @@ Test references.
         readme.write_text("# Test")
 
         result = subprocess.run(
-            [sys.executable, "-m", "physionet", "validate", str(tmp_path), "--checks", "filesystem"],
+            [sys.executable, "-m", "physionet", "preflight", str(tmp_path), "--checks", "filesystem"],
             capture_output=True,
             text=True,
         )
@@ -101,7 +117,7 @@ Test references.
         csv_file.write_text("patient_id,email\n1,test@example.com\n")
 
         result = subprocess.run(
-            [sys.executable, "-m", "physionet", "validate", str(tmp_path)],
+            [sys.executable, "-m", "physionet", "preflight", str(tmp_path)],
             capture_output=True,
             text=True,
         )
@@ -118,12 +134,14 @@ Test references.
         )
 
         assert result.returncode == 0
+        assert "preflight" in result.stdout
         assert "validate" in result.stdout
 
-    def test_validate_subcommand_help(self):
-        """Test that validate subcommand shows help."""
+    @pytest.mark.parametrize("command", ["preflight", "validate"])
+    def test_preflight_subcommand_help(self, command):
+        """Both command names expose the same options."""
         result = subprocess.run(
-            [sys.executable, "-m", "physionet", "validate", "--help"],
+            [sys.executable, "-m", "physionet", command, "--help"],
             capture_output=True,
             text=True,
         )
