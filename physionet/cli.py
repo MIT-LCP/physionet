@@ -110,6 +110,9 @@ def main():
     access_parser.add_argument("--username", help="PhysioNet username (or PHYSIONET_USERNAME)")
     access_parser.add_argument("--password", help="PhysioNet password (or PHYSIONET_PASSWORD)")
     access_parser.add_argument(
+        "--anonymous", action="store_true", help="Check without a saved sign-in or other credentials"
+    )
+    access_parser.add_argument(
         "--base-url", default=_default_base_url(),
         help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
     )
@@ -604,18 +607,39 @@ def _handle_access(args):
 
     from physionet.api.client import PhysioNetClient
     from physionet.api.exceptions import NotFoundError, PhysioNetAPIError
+    from physionet.auth import allows_tokens, load_saved_login, resolve_credentials
 
-    username = args.username or os.getenv("PHYSIONET_USERNAME")
-    if args.password and not username:
+    if args.anonymous and (args.username or args.password):
+        print("--anonymous cannot be used with --username or --password.", file=sys.stderr)
+        return 1
+    if args.password and not (args.username or os.getenv("PHYSIONET_USERNAME")):
         print(
             "--password needs --username (or PHYSIONET_USERNAME); access was not checked.",
             file=sys.stderr,
         )
         return 1
-    password = args.password or os.getenv("PHYSIONET_PASSWORD")
-    # The server only checks an account given by username and password, so the
-    # saved sign-in is never sent here.
-    client_options = dict(base_url=args.base_url, username=username, password=password, use_saved_login=False)
+    if args.anonymous:
+        username = password = token = None
+        use_saved_login = False
+    elif args.username or args.password:
+        username = args.username or os.getenv("PHYSIONET_USERNAME")
+        password = args.password or os.getenv("PHYSIONET_PASSWORD")
+        token = None
+        use_saved_login = False
+        if args.username and not password and allows_tokens(args.base_url):
+            saved = load_saved_login(args.base_url)
+            if saved and saved.get("username") == args.username:
+                username = None
+                use_saved_login = True
+    else:
+        username, password, token = resolve_credentials()
+        use_saved_login = True
+
+    client_options = dict(
+        base_url=args.base_url, username=username, password=password,
+        token=token, use_saved_login=use_saved_login,
+    )
+    auth_method = None
     try:
         if username and not password:
             if not sys.stdin.isatty():
@@ -630,15 +654,15 @@ def _handle_access(args):
                 return 1
             client_options["password"] = password
         with PhysioNetClient(**client_options) as client:
+            auth_method = client.auth_method
             access = client.projects.get_access_status(args.slug, args.version)
-        if username and not access.authenticated:
-            # The server answered as if no account was given, so the result
-            # says nothing about this account. Fail as for a rejected password
-            # rather than report anonymous access as the account's.
-            print(
-                "The server did not accept your username and password. Check them and try again.",
-                file=sys.stderr,
-            )
+        if auth_method and not access.authenticated:
+            if auth_method == "password":
+                message = "The server did not accept your username and password. Check them and try again."
+            else:
+                message = ("The server answered anonymously for your sign-in or token, so your account access "
+                           "was not checked. Try --username to check with a password.")
+            print(message, file=sys.stderr)
             return 1
         if args.json:
             print(json.dumps(asdict(access)))
@@ -681,11 +705,13 @@ def _handle_access(args):
         return 130
     except (PhysioNetAPIError, requests.RequestException) as exc:
         response = getattr(exc, "response", None)
-        if username and response is not None and response.status_code == 401:
-            print(
-                "The server did not accept your username and password. Check them and try again.",
-                file=sys.stderr,
-            )
+        if auth_method and response is not None and response.status_code == 401:
+            if auth_method == "password":
+                print("The server did not accept your username and password. Check them and try again.",
+                      file=sys.stderr)
+            else:
+                print("The server rejected your sign-in or token. Sign in again or check PHYSIONET_TOKEN.",
+                      file=sys.stderr)
         else:
             print(f"Access status unavailable: {exc}", file=sys.stderr)
         return 1

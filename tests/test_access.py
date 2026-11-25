@@ -159,20 +159,82 @@ VERSIONS_URL = "https://physionet.org/api/v1/projects/mimiciv/versions/"
 VERSIONS = [{"slug": "mimiciv", "title": "MIMIC-IV", "version": "3.1", "abstract": "", "citation": ""}]
 
 
-def test_access_cli_does_not_send_the_saved_sign_in(capsys):
+def test_access_cli_uses_the_saved_sign_in(capsys):
     from physionet import auth
     auth._save_login("https://physionet.org", {
         "access_token": "saved-access", "refresh_token": "saved-refresh",
         "expires_at": 9999999999, "username": "researcher",
     })
     with requests_mock.Mocker() as mock:
-        mock.get(ACCESS_URL, json=ANONYMOUS)
+        mock.get(ACCESS_URL, json=ACCESS)
         assert run_cli("access", "mimiciv") == 0
-        mock.get(ACCESS_URL, status_code=404, text="<html>Not found</html>")
-        mock.get(VERSIONS_URL, json=VERSIONS)
+    assert mock.last_request.headers["Authorization"] == "Bearer saved-access"
+    assert "CITI training: pending" in capsys.readouterr().out
+
+
+def test_access_cli_uses_personal_token_for_its_owner(monkeypatch, capsys):
+    monkeypatch.setenv("PHYSIONET_TOKEN", "pnpat_test-token")
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, json=ACCESS)
+        assert run_cli("access", "mimiciv", "--json") == 0
+    assert mock.last_request.headers["Authorization"] == "Bearer pnpat_test-token"
+    assert json.loads(capsys.readouterr().out)["authenticated"] is True
+
+
+def test_access_cli_rejects_anonymous_answer_to_a_token(monkeypatch, capsys):
+    monkeypatch.setenv("PHYSIONET_TOKEN", "pnpat_test-token")
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, json=ANONYMOUS)
+        assert run_cli("access", "mimiciv", "--json") == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "answered anonymously for your sign-in or token" in output.err
+
+
+def test_access_cli_rejected_token_has_a_clear_error(monkeypatch, capsys):
+    monkeypatch.setenv("PHYSIONET_TOKEN", "pnpat_bad-token")
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, status_code=401, json={"detail": "Invalid or expired token."})
         assert run_cli("access", "mimiciv") == 1
-    assert len(mock.request_history) == 3
-    assert all("Authorization" not in request.headers for request in mock.request_history)
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "server rejected your sign-in or token" in output.err
+
+
+def test_access_cli_saved_username_does_not_prompt(capsys):
+    from physionet import auth
+    auth._save_login("https://physionet.org", {
+        "access_token": "saved-access", "refresh_token": "saved-refresh",
+        "expires_at": 9999999999, "username": "researcher",
+    })
+    with patch("getpass.getpass", side_effect=AssertionError("unexpected password prompt")):
+        with requests_mock.Mocker() as mock:
+            mock.get(ACCESS_URL, json=ACCESS)
+            assert run_cli("access", "mimiciv", "--username", "researcher") == 0
+    assert mock.last_request.headers["Authorization"] == "Bearer saved-access"
+    assert "password" not in capsys.readouterr().err
+
+
+def test_access_cli_token_cannot_select_a_username(monkeypatch, capsys):
+    monkeypatch.setenv("PHYSIONET_TOKEN", "pnpat_test-token")
+    with requests_mock.Mocker() as mock:
+        assert run_cli("access", "mimiciv", "--username", "another-account") == 1
+    assert mock.request_history == []
+    assert "PHYSIONET_PASSWORD" in capsys.readouterr().err
+
+
+def test_access_cli_anonymous_flag_ignores_saved_and_environment_tokens(monkeypatch, capsys):
+    from physionet import auth
+    auth._save_login("https://physionet.org", {
+        "access_token": "saved-access", "refresh_token": "saved-refresh",
+        "expires_at": 9999999999, "username": "researcher",
+    })
+    monkeypatch.setenv("PHYSIONET_TOKEN", "pnpat_test-token")
+    with requests_mock.Mocker() as mock:
+        mock.get(ACCESS_URL, json=ANONYMOUS)
+        assert run_cli("access", "mimiciv", "--anonymous") == 0
+    assert "Authorization" not in mock.last_request.headers
+    assert "anonymous" in capsys.readouterr().out
 
 
 def test_access_cli_empty_password_fails_before_request(monkeypatch, capsys):
