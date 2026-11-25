@@ -795,12 +795,13 @@ def _handle_cache(args):
     age = f" downloaded more than {_describe_age(args.older_than)} ago" if args.older_than else ""
     if planned.files == 0 and planned.size == 0 and planned.unfinished == 0 and not planned.versions:
         print(f"Nothing to delete from {what}{age}.")
-        return 0
+        # A dry run only fails to read folders, so these are folders it could not check.
+        return _print_clean_errors(planned.errors, "could not be read")
     summary = _clean_summary(planned, format_size)
     if args.dry_run:
         print(f"Would delete {summary} from {what}{age} in {cache}.")
         _print_removed_versions(planned.versions, "Would remove")
-        return 0
+        return _print_clean_errors(planned.errors, "could not be read")
     if not args.yes:
         if not sys.stdin.isatty():
             print(f"Would delete {summary} from {what}{age}. Pass --yes to delete without asking.",
@@ -817,14 +818,19 @@ def _handle_cache(args):
     result = clean_cache(**options)
     print(f"Deleted {_clean_summary(result, format_size)}.")
     _print_removed_versions(result.versions, "Removed")
-    if result.errors:
-        print(f"{len(result.errors)} path(s) could not be deleted or read:", file=sys.stderr)
-        for path, reason in result.errors[:10]:
-            print(f"  {path}: {reason}", file=sys.stderr)
-        if len(result.errors) > 10:
-            print(f"  and {len(result.errors) - 10} more", file=sys.stderr)
-        return 1
-    return 0
+    return _print_clean_errors(result.errors, "could not be deleted or read")
+
+
+def _print_clean_errors(errors, problem):
+    """Print the paths clean_cache() could not handle; return the exit status."""
+    if not errors:
+        return 0
+    print(f"{len(errors)} path(s) {problem}:", file=sys.stderr)
+    for path, reason in errors[:10]:
+        print(f"  {path}: {reason}", file=sys.stderr)
+    if len(errors) > 10:
+        print(f"  and {len(errors) - 10} more", file=sys.stderr)
+    return 1
 
 
 def _clean_summary(result, format_size):

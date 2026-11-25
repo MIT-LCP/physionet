@@ -391,6 +391,37 @@ def test_cli_clean_removes_old_empty_unfinished_downloads(cache, capsys):
     assert (folder / "new.csv").exists()
 
 
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
+def test_cli_reports_unreadable_folders_when_there_is_nothing_to_delete(cache, capsys):
+    folder = add_version(cache, "demo", "1.0", {"sub/a.csv": b"1"})
+    (folder / "sub").chmod(0)
+    try:
+        assert run_cli("cache", "clean", "--yes") == 1
+        captured = capsys.readouterr()
+        assert captured.out == "Nothing to delete from the cache.\n"
+        assert captured.err == f"1 path(s) could not be read:\n  {folder / 'sub'}: Permission denied\n"
+
+        assert run_cli("cache", "clean", "--dry-run") == 1
+        assert "1 path(s) could not be read:" in capsys.readouterr().err
+    finally:
+        (folder / "sub").chmod(0o700)
+    assert (folder / "sub" / "a.csv").exists()
+    assert len(list_cache()) == 1
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
+def test_cli_dry_run_reports_unreadable_folders(cache, capsys):
+    folder = add_version(cache, "demo", "1.0", {"sub/a.csv": b"1", "b.csv": b"2"})
+    (folder / "sub").chmod(0)
+    try:
+        assert run_cli("cache", "clean", "--dry-run") == 1
+    finally:
+        (folder / "sub").chmod(0o700)
+    captured = capsys.readouterr()
+    assert captured.out.startswith("Would delete 1 file(s), 1.00 B from the cache in")
+    assert "1 path(s) could not be read:" in captured.err
+
+
 def test_cli_clean_version_needs_a_dataset(cache, capsys):
     assert run_cli("cache", "clean", "--version", "1.0", "--yes") == 1
     assert "--version needs a dataset" in capsys.readouterr().err
