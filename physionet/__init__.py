@@ -6,6 +6,7 @@ from physionet.preview import head, tables
 from physionet.auth import login, logout
 from physionet.cache import clean_cache, list_cache
 from physionet.verify import verify
+from physionet.waveform import load_annotation, load_record
 
 try:
     from importlib.metadata import version
@@ -29,4 +30,6 @@ __all__ = [
     "list_cache",
     "clean_cache",
     "verify",
+    "load_record",
+    "load_annotation",
 ]

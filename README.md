@@ -486,8 +486,9 @@ license_path = physionet.fetch("mimic-iv-demo", "LICENSE.txt", version="2.2")
 ```
 
 Supported table formats are `.csv`, `.csv.gz`, `.tsv`, `.tsv.gz`, `.parquet`
-(needs `pyarrow`) and `.xlsx`. For other files, such as WFDB records or PDFs,
-use `fetch()` and open the returned path yourself.
+(needs `pyarrow`) and `.xlsx`. For WFDB records, use `load_record()` (see
+[Read waveform records](#read-waveform-records)). For other files, such as
+PDFs, use `fetch()` and open the returned path yourself.
 
 Restricted datasets use the same credentials as `download()`: the sign-in
 saved by `physionet login` (or `physionet.login()` in Python), a `token`
@@ -545,6 +546,41 @@ set `TQDM_DISABLE=1` to hide every progress bar in the program.
 | `ForbiddenError` | Your account cannot access the dataset, or no credentials were given. |
 | `ConnectionError` | PhysioNet cannot be reached and the file is not cached yet, or no version was given while offline. |
 | `ValueError` | The file is not a supported table format (use `fetch()`), or a name without an extension matches more than one table. |
+
+### Read waveform records
+
+`load_record()` reads a WFDB record, or part of it, with the
+[wfdb](https://github.com/MIT-LCP/wfdb-python) package. Install it with
+`pip install "physionet[wfdb]"`.
+
+```python
+import physionet
+
+# Minutes 5 to 10 of MIT-BIH record 100
+record = physionet.load_record("mitdb", "100", version="1.0.0", start="5min", end="10min")
+record.p_signal      # samples, one column per channel
+record.sig_name      # ['MLII', 'V5']
+record.fs            # 360
+df = record.to_dataframe()   # time index, counted from the start of the slice
+
+# Some channels, by name or number; times in seconds, "90s", "1.5h" or "00:05:00"
+record = physionet.load_record("mitdb", "100", version="1.0.0", channels=["V5"], end=10)
+
+# Records in subfolders, and multi-segment records
+record = physionet.load_record("mimic3wdb", "30/3000003/3000003", version="1.0", start="1h", end="1h1min")
+
+# Annotations
+beats = physionet.load_annotation("mitdb", "100", "atr", version="1.0.0", start="5min", end="10min")
+beats.sample, beats.symbol
+```
+
+Only the files a read needs are downloaded: the header, then the signal files
+and, for a multi-segment record, only the segments that cover `start` to `end`.
+They go into the same cache as `load()` and `fetch()`, after their checksums
+are checked, so a pinned version is read offline afterwards. Restricted datasets
+use your sign-in, as for `load()`. As with every file fetched into the cache,
+the dataset's checksum list is downloaded once per version first; for a few
+very large datasets, such as `mimic3wdb`, this list is hundreds of megabytes.
 
 ### Preview a table
 

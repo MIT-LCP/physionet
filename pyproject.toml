@@ -34,9 +34,14 @@ dependencies = [
 physionet = "physionet.fs:PhysioNetFileSystem"
 
 [project.optional-dependencies]
+# physionet.load_record() and load_annotation() read WFDB files with wfdb.
+wfdb = [
+    "wfdb>=4.1.0",
+]
 dev = [
     "pytest>=7.0.0",
     "requests-mock>=1.9.0",
+    "wfdb>=4.1.0",
 ]
 build = [
     "build>=0.10.0",
