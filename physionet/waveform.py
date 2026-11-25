@@ -13,7 +13,16 @@ from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from typing import Optional, Sequence, Union
 
-from physionet.data import DEFAULT_BASE_URL, _Remote, _check_name, _clean_path, _fetch, _latest_version
+from physionet.data import (
+    DEFAULT_BASE_URL,
+    _Remote,
+    _check_name,
+    _clean_path,
+    _fetch,
+    _latest_version,
+    _refuse_symlinks,
+    get_cache_dir,
+)
 
 __all__ = ["load_record", "load_annotation"]
 
@@ -155,20 +164,34 @@ def load_annotation(
         reader = _Reader(remote, slug, version, cache_dir, source, retries, show_progress)
         annotation_path = reader.fetch(f"{record}.{extension}")
         local_name = str(annotation_path)[: -len(extension) - 1]
-        if start is None and end is None:
-            return reader.read(lambda: wfdb.rdann(local_name, extension))
-
-        # Times need a sampling frequency: the annotation file's, if it has one
         annotation = reader.read(lambda: wfdb.rdann(local_name, extension))
+        # Not every annotation file gives its sampling frequency; the record's
+        # header does, if the project has one.
+        if not annotation.fs:
+            annotation.fs = _header_fs(wfdb, reader, record, local_name)
+        if start is None and end is None:
+            return annotation
+
         fs = annotation.fs
         if not fs:
-            reader.fetch(f"{record}.hea")
-            fs = reader.read(lambda: wfdb.rdheader(local_name)).fs
+            raise ValueError(
+                f"Cannot read {record}.{extension} from start to end: neither it nor a {record}.hea header "
+                "gives the sampling frequency"
+            )
         sampfrom = _to_sample(start, float(fs), "start") if start is not None else 0
         sampto = _to_sample(end, float(fs), "end") if end is not None else None
         if sampto is not None and sampto <= sampfrom:
             raise ValueError("start must be before end")
         return _annotations_in_range(annotation, sampfrom, sampto)
+
+
+def _header_fs(wfdb, reader, record: str, local_name: str):
+    """The sampling frequency in a record's header, or None if the project has no header for it."""
+    try:
+        reader.fetch(f"{record}.hea")
+    except FileNotFoundError:
+        return None
+    return reader.read(lambda: wfdb.rdheader(local_name)).fs
 
 
 # Fields of a wfdb.Annotation with one value per annotation.
@@ -215,8 +238,10 @@ class _Reader:
         self.source = source
         self.retries = retries
         self.show_progress = show_progress
+        self.cache = get_cache_dir(cache_dir)
         self.root: Optional[Path] = None
         self.fetched = set()
+        self.folders = set()  # folders of the files fetched, which wfdb reads from
 
     def fetch(self, name: str) -> Path:
         """Return the cached path of a file in the project, downloading it if needed."""
@@ -235,6 +260,7 @@ class _Reader:
         if self.root is None:
             self.root = path.parents[len(PurePosixPath(name).parts) - 1]
         self.fetched.add(name)
+        self.folders.add(path.parent)
         return path
 
     def read(self, read):
@@ -243,6 +269,7 @@ class _Reader:
         it and try again.
         """
         while True:
+            self._refuse_links()
             try:
                 return read()
             except FileNotFoundError as exc:
@@ -255,6 +282,19 @@ class _Reader:
                     raise FileNotFoundError(
                         f"The record needs {name}, which is not a file in {self.slug} {self.version}"
                     ) from missing
+
+    def _refuse_links(self) -> None:
+        """
+        Refuse symbolic links where wfdb reads, as fetch() does.
+
+        wfdb opens files that are already in the cache itself, without
+        fetch(), so a link there could point it at a file outside the cache.
+        """
+        for folder in self.folders:
+            _refuse_symlinks(self.cache, folder)
+            for entry in os.scandir(folder):
+                if entry.is_symlink():
+                    raise ValueError(f"Refusing to use {entry.path}: symbolic links are not allowed in the cache")
 
     def _project_path(self, filename) -> Optional[str]:
         """The path within the project of a file wfdb could not open, if it is inside the project."""

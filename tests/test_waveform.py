@@ -1,6 +1,7 @@
 """Tests for reading WFDB records and annotations through the cache."""
 
 import hashlib
+import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -187,6 +188,45 @@ def test_annotation_without_fs_uses_the_header(project):
 
     assert list(window.sample) == [260]
     assert "rec.hea" in requested
+
+
+def test_full_annotation_read_takes_fs_from_the_header(project):
+    requested, _ = project
+    annotation = load_annotation("demo", "rec", "qrs", "1.0", source="physionet", show_progress=False)
+
+    assert annotation.fs == FS
+    assert "rec.hea" in requested
+    # The same as a read of a time range
+    window = load_annotation("demo", "rec", "qrs", "1.0", source="physionet", show_progress=False, start=0)
+    assert window.fs == annotation.fs
+
+
+def test_annotation_without_fs_or_header(project, tmp_path):
+    content = (tmp_path / "project" / "rec.qrs").read_bytes()
+    with rm.Mocker() as mocker:
+        mocker.get(f"{BASE}/files/other/1.0/SHA256SUMS.txt", text=f"{hashlib.sha256(content).hexdigest()}  x.qrs\n")
+        mocker.get(f"{BASE}/files/other/1.0/x.qrs", content=content)
+        annotation = load_annotation("other", "x", "qrs", "1.0", source="physionet", show_progress=False)
+        assert annotation.fs is None
+        assert list(annotation.sample) == [60, 260]
+        with pytest.raises(ValueError, match="gives the sampling frequency"):
+            load_annotation("other", "x", "qrs", "1.0", source="physionet", show_progress=False, start=1)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symbolic links need extra rights on Windows")
+def test_a_linked_file_in_the_cache_is_refused(project, tmp_path):
+    read("rec", end=1)
+    cached = tmp_path / "cache" / "physionet.org" / "demo" / "1.0" / "rec.dat"
+    outside = tmp_path / "outside.dat"
+    outside.write_bytes(cached.read_bytes())
+    cached.unlink()
+    cached.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symbolic links are not allowed in the cache"):
+        read("rec", end=1)
+    # As fetch() does for the same file
+    with pytest.raises(ValueError, match="symbolic links are not allowed in the cache"):
+        physionet.fetch("demo", "rec.dat", "1.0", source="physionet", show_progress=False)
 
 
 def test_annotation_extension_is_checked(project):
