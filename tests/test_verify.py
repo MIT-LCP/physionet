@@ -231,6 +231,23 @@ def test_links_to_files_outside_the_folder_do_not_pass(tmp_path):
     assert result.checked == 3
 
 
+def test_a_link_to_another_windows_drive_is_outside(monkeypatch):
+    import ntpath
+
+    import sys
+    from types import SimpleNamespace
+
+    from physionet.verify import _is_inside
+
+    # Windows paths, whatever this test runs on. ntpath.commonpath raises
+    # ValueError for paths on different drives.
+    # (physionet.verify is also the name of the function, so use the module.)
+    monkeypatch.setattr(sys.modules["physionet.verify"], "os", SimpleNamespace(path=ntpath))
+    assert not _is_inside("C:\\data\\demo-1.0", "D:\\other\\100.hea")
+    assert _is_inside("C:\\data\\demo-1.0", "C:\\data\\demo-1.0\\100.hea")
+    assert not _is_inside("C:\\data\\demo-1.0", "C:\\data\\other\\100.hea")
+
+
 def test_checking_no_files_does_not_pass(tmp_path):
     folder = make_copy(tmp_path / "demo-1.0")
     with rm.Mocker() as mocker:

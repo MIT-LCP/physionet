@@ -288,7 +288,12 @@ def _checksums(folder, slug, version, checksums, cache_dir, username, password, 
 def _is_inside(root: str, file: Path) -> bool:
     """Whether a file, with every symbolic link followed, is inside root (a real path)."""
     target = os.path.realpath(file)
-    return os.path.commonpath([root, target]) == root
+    try:
+        return os.path.commonpath([root, target]) == root
+    except ValueError:
+        # On Windows, a link to another drive: paths on different drives
+        # have no common path, and the file is not inside root.
+        return False
 
 
 def _local_files(folder: Path) -> List[str]:
