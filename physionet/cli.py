@@ -948,6 +948,8 @@ def _handle_verify(args):
         return 0 if result.passed else 1
 
     print(f"Checking {result.path} against the checksums from {result.source}")
+    if result.files_source:
+        print(f"Reading files from {result.files_source}")
 
     def listing(names):
         for name in names[:VERIFY_MAX_LISTED]:

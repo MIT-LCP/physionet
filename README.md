@@ -340,7 +340,8 @@ files to the folder you choose, not the cache, so they are not listed here.
 ### `physionet verify`
 
 Check that a local or S3 copy of a dataset is complete and undamaged, or check
-files served by PhysioNet, without first downloading the dataset:
+published files served by PhysioNet or its AWS mirror, without first downloading
+the dataset:
 
 ```bash
 physionet verify ./mimic-iv-demo-2.2                  # dataset and version read from the folder name
@@ -374,16 +375,18 @@ list, not that the list itself is PhysioNet's.
 
 For S3, the package uses the standard AWS credential chain and streams each
 object while calculating its SHA-256 hash. Public buckets can be read without
-AWS credentials. It does not save a local copy, but
-verification reads all of the data and may incur S3 request and transfer charges.
+AWS credentials. It does not save a local copy. Verification reads all of the
+data and may incur S3 request and transfer charges.
 The S3 path must name a prefix containing the dataset's files; a path ending in
 `<slug>/<version>` supplies the project and version automatically. Otherwise,
 pass them explicitly or provide `--checksums`.
 
 For `physionet://<slug>/<version>`, verification reads the published files
 through the same source selection and sign-in as other PhysioNet commands. It
-does not keep a copy of the files. A remote check can find missing or damaged
-published files, but cannot list extra files that are absent from the published
+prints the selected file source separately from the checksum source, so you can
+see whether it checked PhysioNet or the AWS mirror. It does not keep a copy of
+the files. A remote check can find missing or damaged published files, but
+cannot list extra files that are absent from the published
 checksum list. It still reads every checked file in full; use `--include` to
 check a subset.
 

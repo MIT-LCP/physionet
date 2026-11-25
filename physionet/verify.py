@@ -59,6 +59,8 @@ class VerifyResult:
     outside: List[str] = field(default_factory=list)
     """Files that are symbolic links to somewhere outside the folder, so the
     copy does not hold them. They are not read."""
+    files_source: Optional[str] = None
+    """Where remote file contents were read from, when source selection is automatic."""
 
     @property
     def checked(self) -> int:
@@ -81,6 +83,7 @@ class VerifyResult:
         return {
             "path": str(self.path),
             "source": self.source,
+            "files_source": self.files_source,
             "slug": self.slug,
             "version": self.version,
             "passed": self.passed,
@@ -260,12 +263,18 @@ def _verify_s3(
     s3 = boto3.client("s3")
 
     try:
+        objects = _s3_objects(s3, bucket, object_prefix)
+    except (NoCredentialsError, ClientError) as signed_error:
+        stale_codes = {"ExpiredToken", "InvalidToken", "InvalidAccessKeyId", "SignatureDoesNotMatch"}
+        if isinstance(signed_error, ClientError) and signed_error.response.get("Error", {}).get("Code") not in stale_codes:
+            raise OSError(f"Could not list {path}: {signed_error}") from signed_error
         try:
-            objects = _s3_objects(s3, bucket, object_prefix)
-        except NoCredentialsError:
-            # Public buckets can be read without AWS credentials.
+            # Public buckets can be read even when credentials are absent or stale.
             s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
             objects = _s3_objects(s3, bucket, object_prefix)
+        except (BotoCoreError, ClientError) as unsigned_error:
+            error = signed_error if isinstance(signed_error, ClientError) else unsigned_error
+            raise OSError(f"Could not list {path}: {error}") from error
     except (BotoCoreError, ClientError) as exc:
         raise OSError(f"Could not list {path}: {exc}") from exc
     if not objects:
@@ -376,7 +385,7 @@ def _verify_physionet(
 ) -> VerifyResult:
     """Read published files remotely and hash their original response bytes."""
     from physionet.data import _Remote, _check_name, latest_version
-    from physionet.download import S3_BASE_URL, _select_source
+    from physionet.download import S3_BASE_URL, _configure_retry_adapter, _select_source
 
     parsed = urlsplit(path)
     parts = parsed.path.strip("/").split("/")
@@ -408,9 +417,11 @@ def _verify_physionet(
         source_type, source_base = _select_source(client, slug, version, "auto", remote.username, verbose=False)
         if source_type == "s3":
             source_base = f"{S3_BASE_URL}/{slug}/{version}"
+        result.files_source = source_base
+        _configure_retry_adapter(client.session, f"{source_base}/", 3, adapter_prefix=source_base)
 
         with _progress_bar(
-            total=0, unit="B", unit_scale=True, desc="Verifying",
+            unit="B", unit_scale=True, desc="Verifying",
             leave=False, show_progress=show_progress,
         ) as progress:
             def check(item):

@@ -531,6 +531,20 @@ def test_s3_public_bucket_can_be_read_without_aws_credentials(tmp_path):
     assert client.call_args_list[1].kwargs["config"].signature_version is UNSIGNED
 
 
+def test_s3_public_bucket_can_be_read_with_expired_aws_credentials(tmp_path):
+    signed = s3_copy(FILES)
+    signed.get_paginator.return_value.paginate.side_effect = ClientError(
+        {"Error": {"Code": "ExpiredToken", "Message": "The token has expired"}}, "ListObjectsV2"
+    )
+    unsigned = s3_copy(FILES)
+    sums = tmp_path / "sums.txt"
+    sums.write_text(manifest())
+
+    with patch("boto3.client", side_effect=[signed, unsigned]) as client:
+        assert verify("s3://bucket/demo/1.0", checksums=str(sums), show_progress=False).passed
+    assert client.call_args_list[1].kwargs["config"].signature_version is UNSIGNED
+
+
 def test_s3_errors_are_reported_cleanly(capsys):
     s3 = s3_copy(FILES, prefix="copy/")
     s3.get_paginator.return_value.paginate.return_value = [{"Contents": []}]
@@ -572,8 +586,59 @@ def test_physionet_url_cli_can_check_a_subset(capsys):
 
     out = capsys.readouterr().out
     assert "Checking physionet://demo/1.0" in out
+    assert f"Reading files from {site}/files/demo/1.0" in out
     assert "✓ 1 of 1 file(s) match" in out
     assert "To download" not in out
+
+
+def test_physionet_url_reports_when_files_come_from_the_mirror(capsys):
+    mirror = "https://physionet-open.s3.amazonaws.com/demo/1.0"
+    with patch("physionet.download._select_source", return_value=("http", mirror)), rm.Mocker() as mocker:
+        mock_checksums(mocker)
+        mocker.get(f"{mirror}/100.hea", content=FILES["100.hea"])
+        assert run_cli("verify", "physionet://demo/1.0", "--include", "*.hea", "--json") == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["source"] == "https://physionet.org (demo 1.0)"
+    assert result["files_source"] == mirror
+
+
+def test_physionet_url_retries_transient_file_errors(tmp_path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    sums = tmp_path / "SHA256SUMS.txt"
+    sums.write_text(manifest({"100.hea": FILES["100.hea"]}))
+    requests_count = 0
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            nonlocal requests_count
+            requests_count += 1
+            body = b"" if requests_count == 1 else FILES["100.hea"]
+            self.send_response(503 if requests_count == 1 else 200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        site = f"http://127.0.0.1:{server.server_address[1]}"
+        result = verify(
+            "physionet://demo/1.0", checksums=str(sums), base_url=site,
+            include=["*.hea"], show_progress=False,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert result.passed
+    assert requests_count == 2
 
 
 def test_physionet_url_requires_a_dataset_version():
