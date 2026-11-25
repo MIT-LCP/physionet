@@ -982,9 +982,14 @@ def _handle_verify(args):
     if result.passed:
         return 0
     repairable = result.mismatched or result.missing
-    if repairable and result.slug and result.path.resolve().name == f"{result.slug}-{result.version}":
+    from physionet.verify import _named_paths
+
+    download_folder = next(
+        (path for path in _named_paths(result.path) if path.name == f"{result.slug}-{result.version}"), None
+    )
+    if repairable and result.slug and download_folder is not None:
         command = (f"physionet download {result.slug} --version {result.version} "
-                   f"--output {_quote(str(result.path.resolve().parent))}")
+                   f"--output {_quote(str(download_folder.parent))}")
         if args.base_url.rstrip("/") != DEFAULT_BASE_URL:
             command += f" --base-url {_quote(args.base_url)}"
         for pattern in args.include or []:

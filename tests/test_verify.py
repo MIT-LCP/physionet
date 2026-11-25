@@ -138,6 +138,35 @@ def test_project_is_read_from_the_folder_name(tmp_path, parts, expected):
     assert (result.slug, result.version) == expected
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symbolic links need extra rights on Windows")
+def test_project_is_read_from_a_linked_folder_name(tmp_path):
+    target = make_copy(tmp_path / "storage" / "copy-of-something")
+    (tmp_path / "demo-1.0").symlink_to(target, target_is_directory=True)
+    # The other way round: a plainly named link to a download folder
+    (tmp_path / "data").symlink_to(make_copy(tmp_path / "mitdb-1.0.0"), target_is_directory=True)
+
+    with rm.Mocker() as mocker:
+        mock_checksums(mocker)
+        mock_checksums(mocker, "mitdb", "1.0.0")
+        linked = verify(tmp_path / "demo-1.0", show_progress=False)
+        plain = verify(tmp_path / "data", show_progress=False)
+
+    assert (linked.slug, linked.version, linked.passed) == ("demo", "1.0", True)
+    assert (plain.slug, plain.version, plain.passed) == ("mitdb", "1.0.0", True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symbolic links need extra rights on Windows")
+def test_cli_download_hint_uses_the_linked_folder(tmp_path, capsys):
+    target = make_copy(tmp_path / "storage" / "copy-of-something")
+    (target / "RECORDS").unlink()
+    (tmp_path / "demo-1.0").symlink_to(target, target_is_directory=True)
+
+    with rm.Mocker() as mocker:
+        mock_checksums(mocker)
+        assert run_cli("verify", str(tmp_path / "demo-1.0")) == 1
+    assert f"physionet download demo --version 1.0 --output {tmp_path}\n" in capsys.readouterr().out
+
+
 def test_project_given_explicitly(tmp_path):
     folder = make_copy(tmp_path / "anything")
     with rm.Mocker() as mocker:

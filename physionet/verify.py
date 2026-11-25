@@ -217,10 +217,28 @@ def verify(
 
 
 def _guess_project(folder: Path) -> Tuple[Optional[str], Optional[str]]:
-    """Read the project and version from a folder's name, if it follows a known pattern."""
+    """
+    Read the project and version from a folder's name, if it follows a known
+    pattern. The path as given is tried first, so a link named like a
+    download folder works, then the path with links followed.
+    """
+    for candidate in _named_paths(folder):
+        guess = _project_from_path(candidate)
+        if guess != (None, None):
+            return guess
+    return None, None
+
+
+def _named_paths(folder: Path) -> List[Path]:
+    """The folder as given (made absolute, without following links), then with links followed."""
+    given = Path(os.path.abspath(folder))
+    resolved = folder.resolve()
+    return [given] if given == resolved else [given, resolved]
+
+
+def _project_from_path(folder: Path) -> Tuple[Optional[str], Optional[str]]:
     from physionet.data import _NAME
 
-    folder = folder.resolve()
     # `physionet download` saves to <slug>-<version>
     slug, _, version = folder.name.rpartition("-")
     if slug and _NAME.match(slug) and _VERSION.match(version):
