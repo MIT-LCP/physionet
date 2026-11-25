@@ -381,17 +381,20 @@ result = physionet.verify("mimic-iv-demo-2.2")
 result.passed, result.mismatched, result.missing, result.extra
 ```
 
-### `physionet validate`
+### `physionet preflight`
 
-Validate a dataset before submission to PhysioNet. The validator checks for
-common issues that can delay the review process.
+Check a dataset before submission to PhysioNet for common issues that can delay
+the review process.
 
 ```bash
-physionet validate /path/to/dataset
+physionet preflight /path/to/dataset
 ```
 
 A validation report is automatically saved as `PHYSIONET_REPORT.md` in the
 dataset directory.
+The former `physionet validate` command still runs these checks, but is
+deprecated. Use `physionet verify` to check a downloaded copy against its
+published checksums.
 
 **Options:**
 
@@ -441,19 +444,19 @@ matching files can take time; use `--no-duplicate-check` or
 
 ```bash
 # Run only filesystem and privacy checks
-physionet validate /path/to/dataset --checks filesystem,privacy
+physionet preflight /path/to/dataset --checks filesystem,privacy
 
 # Save report as JSON to a custom path
-physionet validate /path/to/dataset --report results.json
+physionet preflight /path/to/dataset --report results.json
 
 # Show only errors and warnings (suppress info messages)
-physionet validate /path/to/dataset --level warning
+physionet preflight /path/to/dataset --level warning
 
 # Scan all rows in CSV files (no sampling)
-physionet validate /path/to/dataset --no-sampling
+physionet preflight /path/to/dataset --no-sampling
 
 # Limit scanning to 5000 rows per file
-physionet validate /path/to/dataset --max-rows 5000
+physionet preflight /path/to/dataset --max-rows 5000
 ```
 
 **Exit codes:**
@@ -684,7 +687,7 @@ except DownloadError as error:
         print(f"{path}: {cause}")
 ```
 
-### Validation
+### Preflight checks
 
 ```python
 from physionet import validate_dataset, ValidationConfig
