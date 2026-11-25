@@ -390,8 +390,8 @@ the review process.
 physionet preflight /path/to/dataset
 ```
 
-A validation report is automatically saved as `PHYSIONET_REPORT.md` in the
-dataset directory.
+A preflight report is automatically saved as `PHYSIONET_PREFLIGHT_REPORT.md`
+in the dataset directory.
 The former `physionet validate` command still runs these checks, but is
 deprecated. Use `physionet verify` to check a downloaded copy against its
 published checksums.

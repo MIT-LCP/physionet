@@ -41,9 +41,9 @@ Test references.
 
         assert result.returncode == 0
         assert "Checking dataset:" in result.stdout
-        assert "PhysioNet Dataset Validation Report" in result.stdout
+        assert "PhysioNet Dataset Preflight Report" in result.stdout
         assert "Report saved to:" in result.stdout
-        assert (tmp_path / "PHYSIONET_REPORT.md").exists()
+        assert (tmp_path / "PHYSIONET_PREFLIGHT_REPORT.md").exists()
         assert "deprecated" not in result.stderr
 
     def test_validate_alias_runs_preflight_with_deprecation_notice(self, tmp_path):
@@ -56,8 +56,8 @@ Test references.
         )
 
         assert result.returncode == 0
-        assert "PhysioNet Dataset Validation Report" in result.stdout
-        assert (tmp_path / "PHYSIONET_REPORT.md").exists()
+        assert "PhysioNet Dataset Preflight Report" in result.stdout
+        assert (tmp_path / "PHYSIONET_PREFLIGHT_REPORT.md").exists()
         assert "deprecated; use 'physionet preflight'" in result.stderr
 
     def test_cli_handles_nonexistent_path(self):
