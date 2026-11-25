@@ -231,6 +231,15 @@ def _remove_tree(
     folders left empty, including top. Links are removed, never followed.
     Return the number of files and links that were kept.
     """
+    if top.is_symlink():
+        # Remove the link itself, never what it points to
+        if not dry_run:
+            try:
+                top.unlink()
+            except OSError as exc:
+                result.errors.append((top, exc.strerror or str(exc)))
+                return 1
+        return 0
     if not _is_real_dir(top):
         return 0
     kept = 0
@@ -266,6 +275,12 @@ def _remove_tree(
                 result.size += info.st_size
                 if staging is None:
                     result.files += 1
+        if staging is not None and staging_in_use[staging]:
+            # A download may have just created this folder and not written to
+            # it yet, so keep it even when it is empty.
+            if folder_path == staging:
+                kept += 1
+            continue
         if not dry_run:
             _remove_if_empty(folder_path)
     return kept

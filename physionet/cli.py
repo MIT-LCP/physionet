@@ -793,7 +793,7 @@ def _handle_cache(args):
     planned = clean_cache(**options, dry_run=True)
     what = args.slug + (f" {args.version}" if args.version else "") if args.slug else "the cache"
     age = f" downloaded more than {_describe_age(args.older_than)} ago" if args.older_than else ""
-    if planned.size == 0 and not planned.versions:
+    if planned.files == 0 and planned.size == 0 and not planned.versions:
         print(f"Nothing to delete from {what}{age}.")
         return 0
     summary = f"{planned.files} file(s), {format_size(planned.size)}"

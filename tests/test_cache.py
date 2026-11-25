@@ -178,9 +178,16 @@ def test_a_linked_version_folder_is_not_entered(cache, tmp_path):
     (cache / "physionet.org" / "demo" / "1.0").symlink_to(outside, target_is_directory=True)
 
     assert list_cache()[0].files == 0
-    clean_cache()
+    assert clean_cache(dry_run=True).versions[0].slug == "demo"
+    assert (cache / "physionet.org" / "demo" / "1.0").is_symlink()
+
+    result = clean_cache()
 
     assert (outside / "precious.txt").read_text() == "keep me"
+    # The link is removed with the version, so a later fetch() is not blocked by it
+    assert [e.slug for e in result.versions] == ["demo"]
+    assert not (cache / "physionet.org" / "demo" / "1.0").is_symlink()
+    assert list_cache() == []
 
 
 def test_unfinished_downloads_are_kept_for_a_day(cache):
@@ -206,6 +213,24 @@ def test_unfinished_downloads_are_kept_for_a_day(cache):
     assert not stale.exists()
     assert not (folder / "a.csv").exists()
     assert len(list_cache()) == 1
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
+def test_an_empty_unfinished_download_is_kept_with_its_version(cache):
+    # fetch() creates the staging folder before it starts writing to it
+    folder = add_version(cache, "demo", "1.0", {"a.csv": b"1"}, age_days=10)
+    (folder / ".download-new").mkdir()
+    old = folder / ".download-old"
+    old.mkdir()
+    set_age(old, 2)
+
+    result = clean_cache()
+
+    assert (result.files, result.versions) == (1, [])
+    assert (folder / ".download-new").is_dir()
+    assert not old.exists()
+    assert (cache / "physionet.org" / ".manifests" / "demo" / "1.0" / "SHA256SUMS.txt").is_file()
+    assert [(e.slug, e.files, e.unfinished) for e in list_cache()] == [("demo", 0, 1)]
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
@@ -312,6 +337,15 @@ def test_cli_clean_dry_run_and_older_than(cache, capsys):
 
     assert run_cli("cache", "clean", "--older-than", "12h", "-y") == 0
     assert [e.slug for e in list_cache()] == ["new"]
+
+
+def test_cli_clean_deletes_old_empty_files(cache, capsys):
+    folder = add_version(cache, "demo", "1.0", {"old.csv": b"", "new.csv": b"1"})
+    set_age(folder / "old.csv", 100)
+
+    assert run_cli("cache", "clean", "--older-than", "30d", "--yes") == 0
+    assert capsys.readouterr().out == "Deleted 1 file(s), 0.00 B.\n"
+    assert sorted(p.name for p in folder.iterdir()) == ["new.csv"]
 
 
 def test_cli_clean_version_needs_a_dataset(cache, capsys):
