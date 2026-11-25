@@ -14,6 +14,7 @@ The checksums are, in order of preference:
 import hashlib
 import os
 import re
+import shlex
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -141,6 +142,7 @@ def verify(
     folder = Path(path).expanduser()
     if not folder.is_dir():
         raise FileNotFoundError(f"{folder} is not a folder")
+    inferred_project = False
     if checksums is not None:
         slug = version = None
     elif version is not None and slug is None:
@@ -148,13 +150,23 @@ def verify(
     elif version is None:
         guessed_slug, guessed_version = _guess_project(folder)
         if slug is None or slug == guessed_slug:
+            inferred_project = slug is None and guessed_slug is not None
             slug, version = guessed_slug, guessed_version
         else:
             raise ValueError(f"Give the version of {slug} that {folder} holds")
 
-    entries, source = _checksums(
-        folder, slug, version, checksums, cache_dir, username, password, token, base_url
-    )
+    try:
+        entries, source = _checksums(
+            folder, slug, version, checksums, cache_dir, username, password, token, base_url
+        )
+    except NotFoundError as exc:
+        if not inferred_project:
+            raise
+        command = f"physionet verify {shlex.quote(str(folder))} SLUG --version {version}"
+        raise NotFoundError(
+            f"{exc}. The project and version were inferred from the folder name {folder.name!r}. "
+            f"If the folder name differs from the PhysioNet slug, pass the actual slug explicitly: `{command}`."
+        ) from exc
     expected: Dict[str, str] = {}
     for name, checksum in _filter_files(entries, include, exclude):
         if _is_safe_path(name):

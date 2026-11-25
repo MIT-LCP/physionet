@@ -234,6 +234,25 @@ def test_server_errors(tmp_path):
             verify(folder, show_progress=False)
 
 
+def test_missing_inferred_project_explains_the_folder_name(tmp_path, capsys):
+    folder = make_copy(tmp_path / "mit-bih-arrhythmia-database-1.0.0")
+    with rm.Mocker() as mocker:
+        mock_checksums(mocker, "mit-bih-arrhythmia-database", "1.0.0", status_code=404)
+        with pytest.raises(NotFoundError, match="inferred from the folder name") as error:
+            verify(folder, show_progress=False)
+        assert "SLUG --version 1.0.0" in str(error.value)
+        assert run_cli("verify", str(folder)) == 1
+    stderr = capsys.readouterr().err
+    assert "mit-bih-arrhythmia-database-1.0.0" in stderr
+    assert "pass the actual slug explicitly" in stderr
+
+    with rm.Mocker() as mocker:
+        mock_checksums(mocker, "mitdb", "1.0.0", status_code=404)
+        with pytest.raises(NotFoundError) as explicit:
+            verify(folder, "mitdb", "1.0.0", show_progress=False)
+    assert "inferred from" not in str(explicit.value)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="symbolic links need extra rights on Windows")
 def test_links_to_files_outside_the_folder_do_not_pass(tmp_path):
     folder = make_copy(tmp_path / "demo-1.0")
