@@ -1042,7 +1042,7 @@ def _handle_preflight(args):
 
     # Run validation
     try:
-        print(f"Validating dataset: {dataset_path}")
+        print(f"Checking dataset: {dataset_path}")
         result = validate_dataset(str(dataset_path), config, show_progress=True)
         print()
 
@@ -1068,7 +1068,7 @@ def _handle_preflight(args):
                 f.write(result.summary())
 
         print()
-        print(f"Validation report saved to: {report_path}")
+        print(f"Report saved to: {report_path}")
 
         if result.status == "error":
             return 1
@@ -1077,7 +1077,7 @@ def _handle_preflight(args):
         return 0
 
     except Exception as e:
-        print(f"Error during validation: {str(e)}", file=sys.stderr)
+        print(f"Error during preflight checks: {str(e)}", file=sys.stderr)
         import traceback
         traceback.print_exc()
         return 1

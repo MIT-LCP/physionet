@@ -383,8 +383,8 @@ result.passed, result.mismatched, result.missing, result.extra
 
 ### `physionet preflight`
 
-Validate a dataset before submission to PhysioNet. The validator checks for
-common issues that can delay the review process.
+Check a dataset before submission to PhysioNet for common issues that can delay
+the review process.
 
 ```bash
 physionet preflight /path/to/dataset

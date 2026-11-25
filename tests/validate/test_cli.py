@@ -40,7 +40,9 @@ Test references.
         )
 
         assert result.returncode == 0
+        assert "Checking dataset:" in result.stdout
         assert "PhysioNet Dataset Validation Report" in result.stdout
+        assert "Report saved to:" in result.stdout
         assert (tmp_path / "PHYSIONET_REPORT.md").exists()
         assert "deprecated" not in result.stderr
 
