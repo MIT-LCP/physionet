@@ -125,11 +125,12 @@ class TestValidationResult:
         result = validate_dataset(str(tmp_path))
         summary = result.summary()
 
-        assert "PhysioNet Dataset Validation Report" in summary
+        assert "PhysioNet Dataset Preflight Report" in summary
         assert tmp_path.name in summary
         assert "Summary:" in summary
         assert "Metadata:" in summary
-        assert "Validation Results:" in summary
+        assert "Preflight Results:" in summary
+        assert "include this preflight report" in summary
 
     def test_to_dict_format(self, tmp_path):
         """Test that to_dict produces valid structure."""

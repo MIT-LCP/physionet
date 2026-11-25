@@ -1049,7 +1049,7 @@ def _handle_preflight(args):
         # Keep the terminal readable; the saved report below lists every issue.
         print(result.summary(max_per_code=TERMINAL_MAX_PER_CODE))
 
-        # Save validation report - either to specified path or default location
+        # Save the preflight report to the requested or default location.
         if args.report:
             report_path = Path(args.report)
             # Determine format based on file extension
@@ -1063,7 +1063,7 @@ def _handle_preflight(args):
                     f.write(result.summary())
         else:
             # Default: save as Markdown in the root of the dataset folder
-            report_path = dataset_path / "PHYSIONET_REPORT.md"
+            report_path = dataset_path / "PHYSIONET_PREFLIGHT_REPORT.md"
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(result.summary())
 

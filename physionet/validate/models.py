@@ -154,21 +154,21 @@ class ValidationResult:
 
         # Section 1: Metadata
         lines.extend([
-            "PhysioNet Dataset Validation Report",
+            "PhysioNet Dataset Preflight Report",
             "=" * 50,
             "",
             "Metadata:",
             f"  Dataset: {self.dataset_path}",
-            f"  Validator version: {validator_version}",
+            f"  PhysioNet package version: {validator_version}",
             f"  Timestamp: {formatted_timestamp}",
             f"  Total size: {self._format_size(self.dataset_stats.total_size_bytes)} "
             f"({self.dataset_stats.file_count} files)",
             "",
         ])
 
-        # Section 2: Validation Results
+        # Section 2: Preflight Results
         lines.extend([
-            "Validation Results:",
+            "Preflight Results:",
             "=" * 50,
         ])
 
@@ -230,7 +230,7 @@ class ValidationResult:
         elif self.status == "warning":
             lines.append("⚠ Dataset has warnings that should be addressed before submission")
         else:
-            lines.append("✓ Dataset passed validation")
+            lines.append("✓ Dataset passed preflight checks")
 
         # Add recommendations section if there are issues
         recommendations = self._generate_recommendations()
@@ -242,8 +242,8 @@ class ValidationResult:
             ])
             lines.extend(recommendations)
 
-        # Add note about including validation report in submission
-        note_text = "Note: A validation report (PHYSIONET_REPORT.md) has been saved in your dataset folder. Please include this file in your final submission."
+        # Add note about including the preflight report in a submission.
+        note_text = "Note: Please include this preflight report in your final submission."
         lines.append("")
         lines.extend(self._wrap_text(note_text))
 

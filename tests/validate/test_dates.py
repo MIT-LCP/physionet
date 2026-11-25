@@ -179,7 +179,7 @@ def test_every_file_with_dates_is_kept_and_only_the_terminal_is_shortened(tmp_pa
     issues = json.loads(report.read_text())["checks"]["privacy"]["issues"]
     assert len([issue for issue in issues if issue.get("code") == "possible-real-date"]) == 13
 
-    markdown = tmp_path / "PHYSIONET_REPORT.md"
+    markdown = tmp_path / "PHYSIONET_PREFLIGHT_REPORT.md"
     subprocess.run([sys.executable, "-m", "physionet", "validate", str(tmp_path)], capture_output=True)
     assert markdown.read_text().count("may be real") == 13
 
