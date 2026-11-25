@@ -73,8 +73,10 @@ class CleanResult:
     """Total size of the files, in bytes."""
     versions: List[CachedVersion] = field(default_factory=list)
     """Project versions that were removed completely, with their checksum lists."""
+    unfinished: int = 0
+    """Unfinished downloads (staging folders) removed."""
     errors: List[Tuple[Path, str]] = field(default_factory=list)
-    """Paths that could not be removed, and why."""
+    """Paths that could not be removed or read, and why."""
 
 
 def list_cache(slug: Optional[str] = None, *, cache_dir: Optional[str] = None) -> List[CachedVersion]:
@@ -158,7 +160,8 @@ def clean_cache(
 
 def _cached_versions(cache: Path) -> Iterator[Tuple[str, str, str]]:
     """Yield (origin, slug, version) for every cached checksum list."""
-    if not _is_real_dir(cache):
+    # The cache folder itself may be a link, as fetch() allows; links below it are not followed.
+    if not cache.is_dir():
         return
     for origin in sorted(cache.iterdir(), key=lambda path: path.name):
         manifests = origin / MANIFEST_FOLDER
@@ -244,7 +247,10 @@ def _remove_tree(
         return 0
     kept = 0
     staging_in_use = {}  # staging folder -> whether it was changed too recently to delete
-    for folder, dirnames, filenames in os.walk(top, topdown=False, followlinks=False):
+    # os.walk skips folders it cannot list. Report them, and count them as
+    # kept, so a version with files that could not be seen is not removed.
+    unlisted: List[OSError] = []
+    for folder, dirnames, filenames in os.walk(top, topdown=False, onerror=unlisted.append, followlinks=False):
         folder_path = Path(folder)
         parts = folder_path.relative_to(top).parts
         staging = next((top.joinpath(*parts[: i + 1]) for i, part in enumerate(parts)
@@ -283,6 +289,11 @@ def _remove_tree(
             continue
         if not dry_run:
             _remove_if_empty(folder_path)
+        if folder_path == staging and (dry_run or not folder_path.exists()):
+            result.unfinished += 1
+    for error in unlisted:
+        result.errors.append((Path(error.filename or top), error.strerror or str(error)))
+        kept += 1
     return kept
 
 

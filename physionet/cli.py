@@ -793,10 +793,10 @@ def _handle_cache(args):
     planned = clean_cache(**options, dry_run=True)
     what = args.slug + (f" {args.version}" if args.version else "") if args.slug else "the cache"
     age = f" downloaded more than {_describe_age(args.older_than)} ago" if args.older_than else ""
-    if planned.files == 0 and planned.size == 0 and not planned.versions:
+    if planned.files == 0 and planned.size == 0 and planned.unfinished == 0 and not planned.versions:
         print(f"Nothing to delete from {what}{age}.")
         return 0
-    summary = f"{planned.files} file(s), {format_size(planned.size)}"
+    summary = _clean_summary(planned, format_size)
     if args.dry_run:
         print(f"Would delete {summary} from {what}{age} in {cache}.")
         _print_removed_versions(planned.versions, "Would remove")
@@ -815,16 +815,23 @@ def _handle_cache(args):
             print("Nothing was deleted.")
             return 0
     result = clean_cache(**options)
-    print(f"Deleted {result.files} file(s), {format_size(result.size)}.")
+    print(f"Deleted {_clean_summary(result, format_size)}.")
     _print_removed_versions(result.versions, "Removed")
     if result.errors:
-        print(f"{len(result.errors)} path(s) could not be deleted:", file=sys.stderr)
+        print(f"{len(result.errors)} path(s) could not be deleted or read:", file=sys.stderr)
         for path, reason in result.errors[:10]:
             print(f"  {path}: {reason}", file=sys.stderr)
         if len(result.errors) > 10:
             print(f"  and {len(result.errors) - 10} more", file=sys.stderr)
         return 1
     return 0
+
+
+def _clean_summary(result, format_size):
+    summary = f"{result.files} file(s), {format_size(result.size)}"
+    if result.unfinished:
+        summary += f", and {result.unfinished} unfinished download(s)"
+    return summary
 
 
 def _print_cache_table(entries, format_size):

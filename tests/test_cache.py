@@ -234,6 +234,33 @@ def test_an_empty_unfinished_download_is_kept_with_its_version(cache):
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
+def test_a_folder_that_cannot_be_read_keeps_its_version(cache):
+    folder = add_version(cache, "demo", "1.0", {"sub/a.csv": b"1", "b.csv": b"2"})
+    (folder / "sub").chmod(0)
+    try:
+        result = clean_cache()
+    finally:
+        (folder / "sub").chmod(0o700)
+
+    assert result.versions == []
+    assert [path for path, _ in result.errors] == [folder / "sub"]
+    assert (folder / "sub" / "a.csv").exists()
+    # The checksum list is kept, so the version is still listed and can be cleaned later
+    assert [(e.slug, e.files) for e in list_cache()] == [("demo", 1)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symbolic links need extra rights on Windows")
+def test_a_linked_cache_folder_is_used(tmp_path):
+    add_version(tmp_path / "real", "demo", "1.0", {"a.csv": b"1"})
+    (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory=True)
+
+    assert [e.slug for e in list_cache(cache_dir=str(tmp_path / "link"))] == ["demo"]
+    assert clean_cache(cache_dir=str(tmp_path / "link")).files == 1
+    assert list_cache(cache_dir=str(tmp_path / "real")) == []
+    assert (tmp_path / "link").is_symlink()
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not as root")
 def test_files_that_cannot_be_deleted_are_reported(cache):
     folder = add_version(cache, "demo", "1.0", {"sub/a.csv": b"1"})
     (folder / "sub").chmod(0o500)
@@ -348,6 +375,22 @@ def test_cli_clean_deletes_old_empty_files(cache, capsys):
     assert sorted(p.name for p in folder.iterdir()) == ["new.csv"]
 
 
+def test_cli_clean_removes_old_empty_unfinished_downloads(cache, capsys):
+    folder = add_version(cache, "demo", "1.0", {"new.csv": b"1"})
+    old = folder / ".download-old"
+    old.mkdir()
+    set_age(old, 2)
+
+    assert run_cli("cache", "clean", "--older-than", "90d", "--dry-run") == 0
+    assert capsys.readouterr().out.startswith("Would delete 0 file(s), 0.00 B, and 1 unfinished download(s) from")
+    assert old.exists()
+
+    assert run_cli("cache", "clean", "--older-than", "90d", "--yes") == 0
+    assert capsys.readouterr().out == "Deleted 0 file(s), 0.00 B, and 1 unfinished download(s).\n"
+    assert not old.exists()
+    assert (folder / "new.csv").exists()
+
+
 def test_cli_clean_version_needs_a_dataset(cache, capsys):
     assert run_cli("cache", "clean", "--version", "1.0", "--yes") == 1
     assert "--version needs a dataset" in capsys.readouterr().err
@@ -369,5 +412,5 @@ def test_cli_clean_reports_errors(cache, capsys):
     finally:
         (folder / "sub").chmod(0o700)
     err = capsys.readouterr().err
-    assert "1 path(s) could not be deleted:" in err
+    assert "1 path(s) could not be deleted or read:" in err
     assert str(Path(folder / "sub" / "a.csv")) in err
