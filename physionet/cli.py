@@ -250,6 +250,36 @@ def main():
             help="Cache folder (default: PHYSIONET_CACHE, or ~/.cache/physionet)",
         )
 
+    # Verify subcommand
+    verify_parser = subparsers.add_parser(
+        "verify", help="Check a downloaded copy of a dataset against its published checksums"
+    )
+    verify_parser.add_argument("path", help="Folder to check, e.g. one made by physionet download")
+    verify_parser.add_argument(
+        "slug", nargs="?", help="Project identifier (default: read from the folder name, e.g. mimiciv-3.1)"
+    )
+    verify_parser.add_argument("--version", help="Project version (default: read from the folder name)")
+    verify_parser.add_argument(
+        "--checksums", metavar="FILE", help="Check against this checksum file instead of the project's"
+    )
+    verify_parser.add_argument(
+        "--include", action="append", help="Only check files matching this glob pattern (can be repeated)"
+    )
+    verify_parser.add_argument(
+        "--exclude", action="append", help="Skip files matching this glob pattern (can be repeated)"
+    )
+    verify_parser.add_argument(
+        "-j", "--jobs", type=_jobs, default=1, metavar="N",
+        help=f"Number of files to read at once, from 1 to {MAX_JOBS} (default: 1)",
+    )
+    verify_parser.add_argument("--json", action="store_true", help="Print JSON to stdout")
+    verify_parser.add_argument("--username", help="PhysioNet username (or PHYSIONET_USERNAME)")
+    verify_parser.add_argument("--password", help="PhysioNet password (or PHYSIONET_PASSWORD)")
+    verify_parser.add_argument(
+        "--base-url", default=_default_base_url(),
+        help=f"PhysioNet server URL (or PHYSIONET_BASE_URL; default: {DEFAULT_BASE_URL})",
+    )
+
     # Validate subcommand
     validate_parser = subparsers.add_parser(
         "validate",
@@ -308,6 +338,8 @@ def main():
         return _handle_doctor(args)
     elif args.command == "cache":
         return _handle_cache(args)
+    elif args.command == "verify":
+        return _handle_verify(args)
     elif args.command == "validate":
         return _handle_validate(args)
     elif args.command is None:
@@ -876,6 +908,86 @@ def _describe_age(age):
         return f"{age.days} day(s)"
     hours = age.total_seconds() / 3600
     return f"{hours:g} hour(s)"
+
+# Files listed per problem in the terminal; --json lists them all.
+VERIFY_MAX_LISTED = 20
+
+
+def _handle_verify(args):
+    """Check a folder against a project's checksums."""
+    from physionet.api.exceptions import ForbiddenError, NotFoundError
+    from physionet.verify import verify
+
+    try:
+        result = verify(
+            args.path,
+            args.slug,
+            args.version,
+            checksums=args.checksums,
+            include=args.include,
+            exclude=args.exclude,
+            jobs=args.jobs,
+            show_progress=not args.json,
+            username=args.username,
+            password=args.password or os.getenv("PHYSIONET_PASSWORD"),
+            base_url=args.base_url,
+        )
+    except KeyboardInterrupt:
+        return 130
+    except ForbiddenError as exc:
+        print(f"Access denied: {exc}", file=sys.stderr)
+        return 1
+    except (FileNotFoundError, NotFoundError, ValueError, ConnectionError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.to_dict()))
+        return 0 if result.passed else 1
+
+    print(f"Checking {result.path} against the checksums from {result.source}")
+
+    def listing(names):
+        for name in names[:VERIFY_MAX_LISTED]:
+            print(f"    {name}")
+        if len(names) > VERIFY_MAX_LISTED:
+            print(f"    and {len(names) - VERIFY_MAX_LISTED} more (--json lists them all)")
+
+    checked = len(result.matched) + len(result.mismatched) + len(result.missing) + len(result.unreadable)
+    if result.matched:
+        print(f"✓ {len(result.matched)} of {checked} file(s) match")
+    if result.mismatched:
+        print(f"✗ {len(result.mismatched)} file(s) do not match (corrupt, changed or incomplete):")
+        listing(result.mismatched)
+    if result.missing:
+        print(f"✗ {len(result.missing)} file(s) are missing:")
+        listing(result.missing)
+    if result.unreadable:
+        print(f"✗ {len(result.unreadable)} file(s) could not be read:")
+        listing([f"{name}: {error}" for name, error in result.unreadable])
+    if result.extra:
+        print(f"ℹ {len(result.extra)} file(s) are not in the checksum list:")
+        listing(result.extra)
+    if checked == 0:
+        print("No files in the checksum list match --include and --exclude.")
+
+    if result.passed:
+        return 0
+    if result.slug and result.path.resolve().name == f"{result.slug}-{result.version}":
+        command = (f"physionet download {result.slug} --version {result.version} "
+                   f"--output {_quote(str(result.path.resolve().parent))}")
+        for pattern in args.include or []:
+            command += f" --include {_quote(pattern)}"
+        for pattern in args.exclude or []:
+            command += f" --exclude {_quote(pattern)}"
+        print(f"\nTo download missing and damaged files again:\n  {command}")
+    return 1
+
+
+def _quote(text):
+    import shlex
+
+    return shlex.quote(text)
 
 
 def _handle_validate(args):

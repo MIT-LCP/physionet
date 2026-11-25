@@ -5,6 +5,7 @@ from physionet.data import fetch, latest_version, load
 from physionet.preview import head, tables
 from physionet.auth import login, logout
 from physionet.cache import clean_cache, list_cache
+from physionet.verify import verify
 
 try:
     from importlib.metadata import version
@@ -27,4 +28,5 @@ __all__ = [
     "logout",
     "list_cache",
     "clean_cache",
+    "verify",
 ]
