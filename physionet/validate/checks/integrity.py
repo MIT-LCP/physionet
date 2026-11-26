@@ -1,6 +1,7 @@
 """Data integrity validation checks."""
 
 import csv
+import inspect
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -39,7 +40,104 @@ def check_integrity(path: Path, config: ValidationConfig, progress_callback: Opt
 
         _validate_csv_structure(csv_file, path, result)
 
+    _validate_wfdb(path, config, result, progress_callback)
+
     return result
+
+
+def _validate_wfdb(
+    path: Path,
+    config: ValidationConfig,
+    result: CheckResult,
+    progress_callback: Optional[Callable[[str], None]],
+) -> None:
+    """Check WFDB records when the optional wfdb package is available."""
+    records = (
+        file_path
+        for suffix in ("*.hea", "*.wfdb")
+        for file_path in path.rglob(suffix)
+    )
+    if not any(
+        not is_ignored_path(file_path, path, config.ignore_patterns)
+        for file_path in records
+    ):
+        return
+
+    if progress_callback:
+        progress_callback("Checking WFDB records")
+    try:
+        import wfdb
+    except ImportError:
+        wfdb = None
+
+    if wfdb is None or not hasattr(wfdb, "check_dataset"):
+        result.issues.append(
+            ValidationIssue(
+                severity=Severity.WARNING,
+                category=CheckCategory.INTEGRITY,
+                code="wfdb_checker_unavailable",
+                message=(
+                    "WFDB records were not checked. Install or upgrade wfdb "
+                    "with 'pip install -U wfdb' and run preflight again."
+                ),
+            )
+        )
+        return
+
+    root = path.resolve()
+
+    def ignore(relative_path: Path) -> bool:
+        return is_ignored_path(root / relative_path, root, config.ignore_patterns)
+
+    try:
+        if _accepts_ignore(wfdb.check_dataset):
+            # Skip ignored folders while walking the dataset
+            issues = wfdb.check_dataset(root, ignore=ignore)
+        else:
+            issues = wfdb.check_dataset(root)
+    except Exception as exc:
+        result.issues.append(
+            ValidationIssue(
+                severity=Severity.WARNING,
+                category=CheckCategory.INTEGRITY,
+                code="wfdb_checker_failed",
+                message=f"WFDB records could not be checked: {exc}",
+            )
+        )
+        return
+
+    for issue in issues:
+        # Report paths as found in the dataset. Resolving them would follow
+        # symbolic links, possibly to files outside the dataset.
+        try:
+            relative_path = Path(issue.path).relative_to(root)
+        except ValueError:
+            file = str(issue.path)
+        else:
+            # Older wfdb versions check ignored folders too
+            if ignore(relative_path):
+                continue
+            file = str(relative_path)
+        result.issues.append(
+            ValidationIssue(
+                severity=Severity.ERROR,
+                category=CheckCategory.INTEGRITY,
+                code=f"wfdb_{issue.code}",
+                file=file,
+                message=issue.message,
+            )
+        )
+
+
+def _accepts_ignore(check_dataset: Callable) -> bool:
+    """Whether the installed wfdb's check_dataset takes an ignore argument."""
+    try:
+        parameters = inspect.signature(check_dataset).parameters
+    except (TypeError, ValueError):
+        return False
+    return "ignore" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
 
 
 def _validate_csv_structure(csv_file: Path, base_path: Path, result: CheckResult) -> None:
