@@ -171,23 +171,24 @@ physionet download mimic-iv --version 3.1
 Check your current access before starting a restricted download:
 
 ```bash
-physionet access mimiciv --version 3.1 --username user
-physionet access mimiciv --version 3.1 --username user --json
+physionet access mimiciv --version 3.1
+physionet access mimiciv --version 3.1 --json
 ```
 
 `access` asks the PhysioNet server whether this request can download files
-directly from PhysioNet for the selected version. Without credentials, it
-checks anonymous access and cannot tell whether your account has completed
-credentialing, training, or a data use agreement. Use `--username` to check
-your own account and see any outstanding steps. The command prompts for a
-password in a terminal; for unattended use, set `PHYSIONET_USERNAME`
-and `PHYSIONET_PASSWORD`. The saved sign-in from `physionet login` and
-`PHYSIONET_TOKEN` are not used for this check: the server does not accept
-tokens here, because the answer shows your credentialing and training status.
-Downloads still use them. Omit `--version` to ask the server for its latest
-published version. A successful status lookup exits with `0` even if access
-is pending; check `authenticated` and `can_download` in JSON to understand
-which account, if any, was checked. Cloud access may have separate requirements.
+directly from PhysioNet for the selected version. It uses `PHYSIONET_TOKEN`
+or the sign-in saved by `physionet login` to check the token owner's own
+access, including credentialing, training, and data use agreements. A token
+cannot select another account. To check with a username and password instead,
+pass `--username`; it prompts for a password in a terminal. If that username
+matches the saved sign-in, the command uses the sign-in without prompting.
+For unattended username/password use, set `PHYSIONET_USERNAME` and
+`PHYSIONET_PASSWORD`. Without credentials, the check is anonymous; use
+`--anonymous` to force that even when signed in. Omit `--version` to ask the
+server for its latest published version. A successful status lookup exits
+with `0` even if access is pending; check `authenticated` and `can_download`
+in JSON to understand which account, if any, was checked. Cloud access may
+have separate requirements.
 The response is informational: the server authorizes each file request again
 when it happens. Some projects may allow access through other routes,
 such as events; `can_download` is the server's current decision.
