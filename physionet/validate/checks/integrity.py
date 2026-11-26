@@ -1,6 +1,7 @@
 """Data integrity validation checks."""
 
 import csv
+import inspect
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -84,19 +85,59 @@ def _validate_wfdb(
         return
 
     root = path.resolve()
-    for issue in wfdb.check_dataset(root):
-        file_path = issue.path.resolve()
-        if is_ignored_path(file_path, root, config.ignore_patterns):
-            continue
+
+    def ignore(relative_path: Path) -> bool:
+        return is_ignored_path(root / relative_path, root, config.ignore_patterns)
+
+    try:
+        if _accepts_ignore(wfdb.check_dataset):
+            # Skip ignored folders while walking the dataset
+            issues = wfdb.check_dataset(root, ignore=ignore)
+        else:
+            issues = wfdb.check_dataset(root)
+    except Exception as exc:
+        result.issues.append(
+            ValidationIssue(
+                severity=Severity.WARNING,
+                category=CheckCategory.INTEGRITY,
+                code="wfdb_checker_failed",
+                message=f"WFDB records could not be checked: {exc}",
+            )
+        )
+        return
+
+    for issue in issues:
+        # Report paths as found in the dataset. Resolving them would follow
+        # symbolic links, possibly to files outside the dataset.
+        try:
+            relative_path = Path(issue.path).relative_to(root)
+        except ValueError:
+            file = str(issue.path)
+        else:
+            # Older wfdb versions check ignored folders too
+            if ignore(relative_path):
+                continue
+            file = str(relative_path)
         result.issues.append(
             ValidationIssue(
                 severity=Severity.ERROR,
                 category=CheckCategory.INTEGRITY,
                 code=f"wfdb_{issue.code}",
-                file=str(file_path.relative_to(root)),
+                file=file,
                 message=issue.message,
             )
         )
+
+
+def _accepts_ignore(check_dataset: Callable) -> bool:
+    """Whether the installed wfdb's check_dataset takes an ignore argument."""
+    try:
+        parameters = inspect.signature(check_dataset).parameters
+    except (TypeError, ValueError):
+        return False
+    return "ignore" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
 
 
 def _validate_csv_structure(csv_file: Path, base_path: Path, result: CheckResult) -> None:
