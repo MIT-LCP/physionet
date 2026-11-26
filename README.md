@@ -434,7 +434,11 @@ published checksums.
   proprietary formats (suggests open alternatives), hidden files, version
   control artifacts, and byte-identical files.
 - **documentation** - Missing or incomplete documentation (e.g. `README.md`).
-- **integrity** - CSV structure, encoding, and duplicate column detection.
+- **integrity** - CSV structure, encoding, and duplicate column detection;
+  WFDB header syntax, record names, referenced signal and segment files, and
+  readability of the first signal frame. Install or upgrade `wfdb` to enable
+  the WFDB checks. Preflight warns when WFDB files are present but the checker
+  is unavailable. These checks do not scan all samples or annotations.
 - **quality** - Missing values, outliers, and data type consistency.
 - **privacy** - PHI patterns (SSN, email, phone numbers), ages above 89,
   dates that may be real, and sensitive file detection.
